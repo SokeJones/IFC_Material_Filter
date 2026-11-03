@@ -1,2 +1,0 @@
-ifcopenshell>=0.8.4,<1.0
-pyinstaller>=6,<8
