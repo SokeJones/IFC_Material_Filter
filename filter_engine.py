@@ -62,7 +62,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                parent_mode: str = 'aggregates', audit_path: str | None = None,
                dry_run: bool = False, notify: Callable[[str], None] = print):
     import ifcopenshell
-    import ifcopenshell.api.root
+    from safe_remove import detach_and_remove_product
     import ifcopenshell.util.element
 
     wanted_names = parse_materials(materials)
@@ -217,8 +217,16 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         notify('Dry run finished; no IFC was written.')
         return {'selected': len(selected), 'total': len(elements), 'counts': dict(counts), 'audit': str(audit)}
 
-    # NOTE: Removing all unselected IfcElements can take significant time for
-    # large IFC files (hundreds of MB). The API manages relationship cleanup.
+    # Snapshot expected element GUIDs BEFORE the output write. Do not access
+    # entity handles from elements that have already been deleted.
+    expected_ids = {r['global_id'] for r in rows if r['decision'] == 'KEEP'}
+    allowed_ids = expected_ids | {e.GlobalId for e in elements if e.id() in (shells | opening_ids)}
+
+    # Avoid api.root.remove_product on large models: recursive pset deletion can
+    # dereference already-removed/shared property sets. Safely detach the
+    # product from IFC relationships, then delete ONLY the product entity.
+    # Orphaned non-product resources may remain, but other products' shared
+    # properties and representations are untouched.
     unwanted = [e.id() for e in elements if e.id() not in keep_ids]
     notify(f'Removing {len(unwanted):,} unselected elements...')
     for index, eid in enumerate(unwanted, 1):
@@ -227,7 +235,13 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         except RuntimeError:
             continue
         if e is not None:
-            ifcopenshell.api.root.remove_product(model, product=e)
+            try:
+                detach_and_remove_product(model, e)
+            except Exception as exc:
+                raise RuntimeError(
+                    f'Failed while removing IFC product #{eid} '
+                    f'({e.is_a()}, GlobalId={e.GlobalId}): {exc}'
+                ) from exc
         if index % 2000 == 0:
             notify(f'Removed {index:,} / {len(unwanted):,}')
     for sid in shells:
@@ -248,11 +262,10 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         notify('Reopening export for validation...')
         verified = ifcopenshell.open(str(temp))
         actual = {e.GlobalId for e in verified.by_type('IfcElement')}
-        expected_selected = {r['global_id'] for r in rows if r['decision'] == 'KEEP'}
-        missing = expected_selected - actual
+        missing = expected_ids - actual
         if missing:
             raise RuntimeError(f'Export validation failed: {len(missing)} selected elements missing. Example: {next(iter(missing))}')
-        unexpected = actual - {e.GlobalId for e in elements if e.id() in keep_ids}
+        unexpected = actual - allowed_ids
         if unexpected:
             raise RuntimeError(f'Export validation failed: {len(unexpected)} unexpected physical elements remain')
         temp.replace(dst)
