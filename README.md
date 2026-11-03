@@ -1,5 +1,7 @@
 # IFC Material Filter — Windows (multiple materials)
 
+**Version 1.1 — removal stability fix (2026-11-03)**
+
 Standalone filtering of IFC2X3/IFC4 models using IfcOpenShell.
 
 ## Input
@@ -37,3 +39,26 @@ CLI: `python cli.py model.ifc filtered.ifc --material "Stahlbeton Schweiz" --mat
 - Does not perform shape-by-shape geometric validation; reopen in BIMcollab Zoom to review openings, element placement, geometry and quantities before downstream use.
 - The script is syntax-checked but has **not** been end-to-end tested in this environment because IfcOpenShell installation is blocked here. Do not use the result as a final production model without checking.
 - This software is provided as source with no warranty. Keep the unmodified original.
+
+## Version 1.1: Fix for `invalid null reference` during export
+Earlier builds used `ifcopenshell.api.root.remove_product`, which recursively
+removes property sets and can fail on shared or invalidated property-set handles.
+This release replaces that call with `safe_remove.detach_and_remove_product`.
+It first removes the unwanted product's membership from IFC relationships,
+then deletes the product itself. Shared property sets and other supporting
+resources are **not** recursively deleted. This can leave unused geometry or
+property entities in the filtered IFC, resulting in a larger-than-minimal file.
+The filtered file should contain only retained IfcElement occurrences, support
+openings and necessary parent shells, but must still be reviewed in a viewer.
+
+The output validation no longer reads deleted product handles. The GitHub
+Actions workflow runs the regression suite before compiling the executable.
+
+**To update an older GitHub repository:** replace `filter_engine.py`, add
+`safe_remove.py`, and replace `.github/workflows/build-windows.yml`. Commit and
+run the build workflow to obtain a NEW Windows executable. Do not continue
+using the old `.exe`; changing source files alone does not update it.
+
+**Testing:** 8 unit tests passed, including shared-property-set removal. Full
+IFC processing remains unverified here because IfcOpenShell is not available
+in this container. A Windows build and a visual review are required.
