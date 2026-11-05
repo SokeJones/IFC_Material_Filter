@@ -6,6 +6,7 @@ on:
       - 'app.py'
       - 'filter_engine.py'
       - 'extract_export.py'
+      - 'performance.py'
       - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/build-windows.yml'
