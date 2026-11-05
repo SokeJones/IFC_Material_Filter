@@ -12,8 +12,8 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.3')
-        self.geometry('820x660')
+        self.title('IFC Material Filter v1.4 — Benchmark')
+        self.geometry('870x735')
         self.minsize(690, 540)
         self.q = queue.Queue()
         self.worker = None
@@ -21,6 +21,8 @@ class FilterApp(tk.Tk):
         self.outputvar = tk.StringVar()
         self.parentvar = tk.StringVar(value='aggregates')
         self.dryvar = tk.BooleanVar(value=False)
+        self.enginevar = tk.StringVar(value='both')
+        self.validationvar = tk.StringVar(value='full')
         self._layout()
         self.after(100, self._poll)
 
@@ -50,6 +52,16 @@ class FilterApp(tk.Tk):
         ttk.Label(r, text='Include unassigned children of matching parents:').pack(side='left', padx=(0, 8))
         ttk.Combobox(r, textvariable=self.parentvar, state='readonly', width=22,
                      values=['none','aggregates','aggregates+nests']).pack(side='left')
+        e = ttk.Frame(outer)
+        e.pack(fill='x', pady=(0, 8))
+        ttk.Label(e, text='Export engine:').pack(side='left', padx=(0, 8))
+        ttk.Combobox(e, textvariable=self.enginevar, state='readonly', width=22,
+                     values=['both','ifcpatch','batch']).pack(side='left', padx=(0, 22))
+        ttk.Label(e, text='Validation:').pack(side='left', padx=(0, 8))
+        ttk.Combobox(e, textvariable=self.validationvar, state='readonly', width=12,
+                     values=['full','basic']).pack(side='left')
+        ttk.Label(outer, text='Both: creates _ifcpatch.ifc and _batch.ifc; Batch Cleanup is EXPERIMENTAL.',
+                  foreground='#A04A17').pack(anchor='w', pady=(0, 5))
         ttk.Checkbutton(outer, text='Audit only (CSV, no IFC export)', variable=self.dryvar).pack(anchor='w', pady=(0, 12))
         buttons = ttk.Frame(outer)
         buttons.pack(fill='x')
@@ -79,20 +91,23 @@ class FilterApp(tk.Tk):
         if not infile or not outfile or not materials:
             messagebox.showerror('Missing input', 'Select input IFC and output file, and enter at least one material.')
             return
-        if Path(outfile).exists() and not self.dryvar.get():
-            messagebox.showerror('Output exists', 'Choose a new output filename. Existing files are never overwritten.')
+        from filter_engine import output_paths
+        if not self.dryvar.get() and any(p.exists() for p in output_paths(Path(outfile), self.enginevar.get()).values()):
+            messagebox.showerror('Output exists', 'Choose another output filename. Existing files are never overwritten.')
             return
         self.runbutton.configure(state='disabled')
         self.log.insert('end', f'Filtering for: {", ".join(materials)}\n')
         self.log.see('end')
-        options = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get())
+        options = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get(),
+                   self.enginevar.get(), self.validationvar.get())
         self.worker = threading.Thread(target=self._work, args=(options,), daemon=True)
         self.worker.start()
 
     def _work(self, options):
         try:
-            source, dest, materials, mode, dry = options
+            source, dest, materials, mode, dry, engine, validation = options
             result = export_ifc(source, dest, materials, parent_mode=mode, dry_run=dry,
+                                engine=engine, validation=validation,
                                 notify=lambda msg: self.q.put(('log', msg)))
             self.q.put(('done', result))
         except Exception:

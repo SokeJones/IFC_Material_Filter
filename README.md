@@ -1,73 +1,70 @@
-# IFC Material Filter v1.2 — compact multi-material IFC export
+# IFC Material Filter v1.4 — Two-engine benchmark (experimental)
 
-**Status:** Build kit with unit tests; full extraction has NOT been validated on your 358 MB IFC. This ZIP does not contain a prebuilt executable.
+**Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
-## What changed compared with v1.1
+## Engines and outputs
 
-v1.1 deleted the unwanted `IfcElement` entries but left large orphaned geometry and properties behind. v1.2 replaces the deletion loop with **IfcPatch `ExtractElements`**: select desired element GlobalIDs, extract them into a new IFC graph, write to a temporary file, reopen and validate, then rename to the requested output path. The original IFC remains unchanged.
+The interface defaults to `both`, `full` validation. With an output base name `filtered.ifc`, this creates:
 
-Reference: https://docs.ifcopenshell.org/autoapi/ifcpatch/recipes/ExtractElements/index.html
+- `filtered_ifcpatch.ifc`: reference output from `ExtractElements` (as in v1.3).
+- `filtered_batch.ifc`: experimental output by detaching rejected elements from relationships and batch-removing unreachable IFC resources.
+- `filtered.audit.csv`: source GlobalIDs, material matches and selection reasons.
+- `filtered_ifcpatch.timing.csv` and `filtered_batch.timing.csv`: individual elapsed stage times and process RSS before/after/peak. Corresponding `*.timing.metrics.csv` contain entity and file-size counters.
+- `filtered.comparison.json`: both engines' results, validation messages, output sizes, selected-element parity checks, and any failure tracebacks.
+- `filtered.timing.csv` + `filtered.timing.metrics.csv`: common selection stages.
 
-## Materials and relationships
+For a single engine (`ifcpatch` or `batch`) the requested filename is used unchanged. `batch` mode is strictly experimental. Existing IFC files are never overwritten. Failed exports do not replace the final destination; incomplete output files are left with `.incomplete.ifc` in the name for diagnostics.
 
-- Enter multiple materials, one per line or separated by semicolons; case-insensitive exact names. Commas are allowed within material names.
-- **OR** selection: one matching material is sufficient.
-- Direct material association takes priority over the IFC type's material; constituent material layer sets are traversed.
-- Default `aggregates` option includes unassigned child elements under parents whose material matches. This is an **application convention**, not automatic IFC material inheritance.
-- Optional `aggregates+nests` also includes nesting ancestry; `none` disables parent matching.
-- Missing-matching-material elements are excluded. Required opening elements may be included to preserve void geometry. IfcPatch may retain non-geometric assembly ancestors/spatial structures.
+## Material semantics
 
-## Outputs
+- Multiple names: one per line, or separated by semicolons (OR logic; case-insensitive exact comparison).
+- Direct occurrence materials take precedence over IFC type material assignments.
+- Parent aggregation is optional (default `aggregates`) and adds unassigned children whose parent matches. This is a selection heuristic, **not normative IFC material inheritance**.
+- Optional `aggregates+nests` follows nesting parents as well.
+- Openings and unrepresented assembly shells are retained where needed.
 
-- `<name>_filtered.ifc`: new extracted IFC, expected to be substantially smaller than v1.1.
-- `<name>_filtered.audit.csv`: all physical elements and KEEP/REMOVE decisions, with match reason.
-- For IFC2X3 inputs the output must remain IFC2X3. Extracted IFC is validated by reopening, checking GlobalIDs, checking that expected geometry references remain, and rejecting unexpected geometry on nonselected physical elements.
-- Validation does **not** check full geometric equivalence, opening subtraction results, every IFC EXPRESS rule, property set completeness, or viewer compatibility. Verify in BIMcollab Zoom.
-- There is no guaranteed file-size target (8.5 MB BIM.works is a useful benchmark).
+## Batch Cleanup algorithm (experimental)
 
-## Build a portable Windows EXE using GitHub Actions
+1. Reopen a **separate** IFC instance for the batch engine; do not modify the reference model.
+2. Invert the shared material selection and remove rejected products with v1.1's relationship-safe routine; do not recursively delete shared property sets.
+3. Clear representations of retained non-selected assembly shells.
+4. Traverse the remaining project's, spatial objects' and selected elements' forward references, plus inverse IFC relationships attached to live objects and types. **Do not** traverse inverse relationships from shared material nodes.
+5. Mark unreachable STEP entities for deletion and use `model.batch()` / `model.unbatch()` to remove them efficiently as one batch. The batch deletion API is different from `remove_deep2()`; it is used only after a reachability sweep guarantees that no retained root depends on a removed entity.
+6. Save to an incomplete IFC, reopen, check required GUIDs and geometry references, perform schema validation, then publish the final file.
 
-1. Create a **private** GitHub repository, and upload the files in this kit, preserving `.github/workflows/build-windows.yml`.
-2. In GitHub **Actions**, run **Build Windows portable EXE**.
-3. Download the artifact `IFC_Material_Filter_Windows` and extract both the artifact and the inner ZIP. Run `IFC_Material_Filter.exe` in a writable folder.
-4. No Python installation or administrator rights should be needed to run it; corporate application policy could still prevent execution.
-5. IFC data is processed locally. **Never upload your project IFC to GitHub for this workflow.**
+The size and speed of this approach are not guaranteed. A graph cleanup may require substantial RAM; **peak process RSS** is monitored in the timing logs. The implementation may encounter unexpected relationships in models not represented by unit tests; it fails explicitly instead of silently emitting an unchecked file.
 
-Build uses Python 3.12, `ifcopenshell==0.8.5`, `ifcpatch==0.8.5` and PyInstaller. These are pinned to avoid untested future changes, but must be proven against the IFC2X3 input. Known extract recipe version-specific IFC2X3 issues have been reported upstream.
+## Full validation (default)
 
-## Local developer commands
+- Reopen the output and verify IFC schema and retained GlobalIDs.
+- Reject unexpected represented physical elements (except supporting openings).
+- Detect previously represented selected elements that lose representation references.
+- Run `ifcopenshell.validate.validate()` on the resulting IFC with **basic schema attribute/cardinality checks**; errors/warnings are recorded. EXPRESS WHERE rule checking is not performed, and pre-existing schema warnings may remain.
+- Compare both outputs' selected GlobalIDs, classes and representation presence. The comparison is **structural**, not a proof of shape or world-placement equality. Confirm these using BIMcollab Zoom before using the batch result.
+- Warn if experimental output is over 1.5 times the reference export size.
 
+## Build EXE on Windows via GitHub Actions
+
+1. Upload source files to your existing **private** GitHub repository, preserving `.github/workflows/build-windows.yml`.
+2. Run GitHub Actions **Build Windows portable EXE**. It installs pinned IfcOpenShell 0.8.5/IfcPatch 0.8.5, psutil and PyInstaller; it runs all tests including a small IFC integration test on Windows before building.
+3. Download `IFC_Material_Filter_Windows`, extract the inner ZIP, run `IFC_Material_Filter.exe`.
+4. No Python or admin rights are normally needed to run the packaged executable (subject to corporate security policy).
+
+**Do not upload proprietary IFC model files to GitHub.** Everything can run locally after you have built the EXE.
+
+### CLI alternative
+
+```powershell
+python cli.py original.ifc filtered.ifc --material "Stahlbeton Schweiz" --material "Beton C30/37" --engine both --validation full
 ```
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
-python app.py
-python cli.py model.ifc filtered.ifc --material "Stahlbeton Schweiz" --material "Beton C30/37"
-```
 
-## Troubleshooting
+## Benchmark protocol
 
-- If validation fails, the destination IFC is not finalised. Look for `<name>_filtered.incomplete.ifc` for diagnostics (do not use as final output).
-- If no elements match, only the audit report is created; extraction refuses to create an empty IFC.
-- If IfcPatch raises an IFC2X3 compatibility error, send the entire traceback and record the installed/build dependency versions. Do not silently upgrade `ifcpatch` to a development build.
-- The IfcPatch recipe may take significant memory/time when extracting thousands of GUIDs from large models.
+Use the exact same input IFC and materials as v1.3. First compare `*_ifcpatch.ifc` visually with `*_batch.ifc` in BIMcollab Zoom and check the `comparison.json`, especially schema findings and representation differences. Record total times and output sizes for both benchmark models. Keep v1.3 as your production fallback until batch output is verified and substantially faster.
 
-## Update from v1.1
+## References
 
-Replace **all** repository source files with v1.2 and preserve the GitHub workflow. `safe_remove.py` is obsolete and can be deleted. **Rebuild** using GitHub Actions; merely editing source does not update the previous EXE.
-
-## Scope
-
-Only physical `IfcElement` occurrences are material-selected. IFC annotations, standalone quantities and nonphysical objects are not intentionally selected; required model structure can remain. New extraction retains original geometry definitions and supporting references where available, without remeshing.
-
-## Version 1.3: instrumented selection performance
-
-- **Same extraction mechanism and material selection semantics as v1.2.** No change to the geometry copying recipe.
-- Caches matched material sets by material root entity ID, rather than by individual element; materials and material layer sets are commonly shared by thousands of occurrences.
-- Reuses geometry-presence information collected during selection instead of rescanning the entire input after extraction.
-- Each stage reports wall-clock seconds in the application's log and writes a `*.timing.csv` beside the IFC, showing opening, element indexing, hierarchy indexing, selection, audit, extraction, writing, reopening, and validation.
-- A 50% speedup is **not guaranteed**. In particular, if `07 IfcPatch ExtractElements` dominates, the caching optimizations will have limited overall effect. Use two validated baseline models to compare timings and output GlobalIDs.
-
-### Verification
-
-Keep your v1.2 EXE and filtered outputs. Rebuild the v1.3 EXE using GitHub Actions. Filter the same input IFC and materials into a new destination, compare counts in the audit CSV, inspect both outputs in BIMcollab Zoom, and compare `*.timing.csv` with total stopwatch time. Do not overwrite production output until the models are checked.
-
+- IfcOpenShell file batch operations: https://docs.ifcopenshell.org/autoapi/ifcopenshell/file/index.html
+- IfcOpenShell relationship removal: https://docs.ifcopenshell.org/autoapi/ifcopenshell/api/root/index.html
+- IfcPatch ExtractElements: https://docs.ifcopenshell.org/autoapi/ifcpatch/recipes/ExtractElements/index.html
+- IfcOpenShell schema validation: https://docs.ifcopenshell.org/autoapi/ifcopenshell/validate/index.html

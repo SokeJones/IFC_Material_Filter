@@ -81,9 +81,10 @@ def validate_extraction(output, original_schema: str, expected_ids: set[str],
 
 def export_and_validate(model, input_path: str, output_path: Path,
                         expected_ids: set[str], opening_ids: set[str], notify=print,
-                        timings=None, source_represented: set[str] | None = None):
+                        timings=None, source_represented: set[str] | None = None, validation='full'):
     import ifcopenshell
     import ifcpatch
+    from validation_v14 import full_validate
     dest = Path(output_path)
     temp = dest.with_name(dest.stem + '.incomplete.ifc')
     if temp.exists():
@@ -119,7 +120,10 @@ def export_and_validate(model, input_path: str, output_path: Path,
             lost = source_represented & set(report['selected_without_representation'])
             if lost:
                 raise RuntimeError(f'{len(lost)} selected elements lost their geometry. Example: {sorted(lost)[0]}')
-        with stage('12 Finalize output'):
+        if validation == 'full':
+            with stage('12 IFC schema validation'):
+                report.update(full_validate(check, notify))
+        with stage('13 Finalize output'):
             temp.replace(dest)
         return report
     except Exception:
