@@ -43,7 +43,9 @@ def _placement_signature(product, tolerance=1e-6):
     placement = getattr(product, 'ObjectPlacement', None)
     if placement is None:
         return None
-    matrix = ifcopenshell.util.placement.get_placement(placement, should_return_si=True)
+    # Compare source and output placements in their respective IFC project units.
+    # The material filter preserves units; no SI conversion is needed here.
+    matrix = ifcopenshell.util.placement.get_local_placement(placement)
     return [_quantize(row, tolerance) for row in matrix]
 
 

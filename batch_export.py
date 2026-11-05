@@ -105,7 +105,7 @@ def remove_unselected_spaces(model, notify=print):
             # Merely changing containment retains possibly invalid PlacementRelTo
             # references to the discarded space's IfcLocalPlacement.
             affected = {e.id(): e for rel in containing for e in rel.RelatedElements}
-            snapshots = capture_world_placements(affected.values())
+            snapshots = capture_world_placements(model, affected.values())
             for rel in containing:
                 rel.RelatingStructure = storey
                 moved += len(rel.RelatedElements)

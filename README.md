@@ -205,3 +205,10 @@ traversal based on those findings in a separate version.
 triangulated surface, not mathematical BREP identity. The comparison verifies
 only retained IFC elements, not correctness of the material-selection decision
 itself.
+
+
+## v1.4.6 build-fix 2 (IfcOpenShell 0.8.5 placement API compatibility)
+- Replaced calls to `ifcopenshell.util.placement.get_placement`, which is not available in the Windows runner's pinned IfcOpenShell 0.8.5, with `get_local_placement`.
+- Placement repair converts IFC project-unit translations to SI metres before calling `edit_object_placement(..., is_si=True)`; rotations remain unchanged.
+- The geometry comparison and the integration test also use `get_local_placement`.
+- The GitHub test gate stays enabled; the filter/export and serialization algorithms are unchanged.
