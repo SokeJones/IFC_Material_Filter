@@ -1,4 +1,4 @@
-"""IFC Material Filter v1.5: simple daily workflow, optional advanced tools.
+"""IFC Material Filter v1.5.2: focused action button and fresh-file status reset.
 
 Keep engine logic in filter_engine unchanged. The GUI only dispatches to it.
 """
@@ -17,7 +17,7 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.5')
+        self.title('IFC Material Filter v1.5.2')
         self.geometry('760x620')
         self.minsize(620, 570)
         self.q = queue.Queue()
@@ -26,6 +26,8 @@ class FilterApp(tk.Tk):
         self.outputvar = tk.StringVar()
         self.parentvar = tk.StringVar(value='aggregates')
         self.dryvar = tk.BooleanVar(value=False)
+        self.saveauditvar = tk.BooleanVar(value=False)
+        self.savereportsvar = tk.BooleanVar(value=False)
         # Normal use: only the previously benchmarked Batch Cleanup engine.
         self.enginevar = tk.StringVar(value='batch')
         self.validationvar = tk.StringVar(value='basic')
@@ -36,6 +38,7 @@ class FilterApp(tk.Tk):
         self.log_text = None
         self.operation_start = None
         self._layout()
+        self.filevar.trace_add('write', self._input_changed)
         self.after(120, self._poll)
 
     def _layout(self):
@@ -60,7 +63,8 @@ class FilterApp(tk.Tk):
         ttk.Label(outer, text='Input IFC file').pack(anchor='w')
         r = ttk.Frame(outer)
         r.pack(fill='x', pady=(4, 14))
-        ttk.Entry(r, textvariable=self.filevar).pack(side='left', fill='x', expand=True, padx=(0, 9))
+        self.source_entry = ttk.Entry(r, textvariable=self.filevar)
+        self.source_entry.pack(side='left', fill='x', expand=True, padx=(0, 9))
         ttk.Button(r, text='Browse...', command=self._source).pack(side='left')
 
         ttk.Label(outer, text='Material names').pack(anchor='w')
@@ -75,8 +79,14 @@ class FilterApp(tk.Tk):
         ttk.Entry(r, textvariable=self.outputvar).pack(side='left', fill='x', expand=True, padx=(0, 9))
         ttk.Button(r, text='Browse...', command=self._destination).pack(side='left')
 
-        self.runbutton = ttk.Button(outer, text='Filter IFC', command=self._start)
-        self.runbutton.pack(fill='x', ipady=6)
+        # A centered primary action is easier to locate than a full-width button.
+        primary_style = ttk.Style(self)
+        primary_style.configure('Primary.TButton', font=('Segoe UI', 11, 'bold'), padding=(24, 10))
+        action_row = ttk.Frame(outer)
+        action_row.pack(fill='x', pady=(4, 0))
+        self.runbutton = ttk.Button(action_row, text='Filter IFC', command=self._start,
+                                    style='Primary.TButton', width=23)
+        self.runbutton.pack(anchor='center')
         progress = ttk.Frame(outer)
         progress.pack(fill='x', pady=(17, 2))
         ttk.Label(progress, textvariable=self.statusvar).pack(side='left')
@@ -86,7 +96,22 @@ class FilterApp(tk.Tk):
         ttk.Label(outer, text='Original IFC is never overwritten. Material names match exactly (case-insensitive).',
                   foreground='#666666').pack(anchor='w', pady=(17, 0))
 
+    def _input_changed(self, *_):
+        # Works for Browse and manual edits; leave active worker progress intact.
+        if not self._busy():
+            self._reset_status()
+
+    def _reset_status(self):
+        self.progress.stop()
+        self.progress.configure(value=0)
+        self.statusvar.set('Ready to filter an IFC model.')
+        self.stagevar.set('')
+        self.operation_start = None
+
     def _source(self):
+        if self._busy():
+            messagebox.showwarning('Processing', 'Finish the current operation before changing the input IFC.')
+            return
         path = filedialog.askopenfilename(filetypes=[('IFC models', '*.ifc'), ('All files', '*.*')])
         if path:
             self.filevar.set(path)
@@ -120,7 +145,10 @@ class FilterApp(tk.Tk):
         ttk.Label(panel, text='Include unassigned children of matching parents').pack(anchor='w')
         ttk.Combobox(panel, textvariable=self.parentvar, state='readonly', width=26,
                      values=('none', 'aggregates', 'aggregates+nests')).pack(anchor='w', pady=(5, 8))
-        ttk.Checkbutton(panel, text='Audit only (CSV; do not export IFC)', variable=self.dryvar).pack(anchor='w')
+        ttk.Checkbutton(panel, text='Save audit CSV', variable=self.saveauditvar).pack(anchor='w', pady=(10, 3))
+        ttk.Checkbutton(panel, text='Save detailed reports (timing, comparison, diagnostics)', variable=self.savereportsvar).pack(anchor='w', pady=3)
+        ttk.Checkbutton(panel, text='Audit only (CSV; do not export IFC)', variable=self.dryvar).pack(anchor='w', pady=(10, 0))
+        ttk.Label(panel, text='Audit-only always saves an audit CSV.', foreground='#666666').pack(anchor='w')
         ttk.Label(panel, text='Settings apply to the next filtering operation.', foreground='#666666').pack(anchor='w', pady=(14, 8))
         ttk.Button(panel, text='Close', command=win.destroy).pack(anchor='e')
         win.transient(self)
@@ -184,6 +212,7 @@ class FilterApp(tk.Tk):
     def _begin(self, title):
         self.operation_start = time.monotonic()
         self.runbutton.configure(state='disabled')
+        self.source_entry.configure(state='disabled')
         self.statusvar.set(title)
         self.stagevar.set('Initializing...')
         self.progress.start(14)
@@ -192,6 +221,7 @@ class FilterApp(tk.Tk):
     def _finish(self, message):
         self.progress.stop()
         self.runbutton.configure(state='normal')
+        self.source_entry.configure(state='normal')
         self.statusvar.set(message)
         if self.operation_start is not None:
             elapsed = time.monotonic() - self.operation_start
@@ -215,10 +245,12 @@ class FilterApp(tk.Tk):
             messagebox.showerror('Output exists', 'Choose another output filename. Existing IFC files are never overwritten.')
             return
         opts = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get(),
-                self.enginevar.get(), self.validationvar.get())
+                self.enginevar.get(), self.validationvar.get(),
+                self.saveauditvar.get(), self.savereportsvar.get())
         self._begin('Filtering IFC...')
         self._log('Selected materials: ' + '; '.join(materials))
         self._log('Engine: ' + self.enginevar.get() + '; validation: ' + self.validationvar.get())
+        self._log(f'Save audit: {self.saveauditvar.get()}; save reports: {self.savereportsvar.get()}')
         self.worker = threading.Thread(target=self._work, args=(opts,), daemon=True)
         self.worker.start()
 
@@ -248,9 +280,10 @@ class FilterApp(tk.Tk):
 
     def _work(self, options):
         try:
-            source, dest, materials, mode, dry, engine, validation = options
+            source, dest, materials, mode, dry, engine, validation, save_audit, save_reports = options
             result = export_ifc(source, dest, materials, parent_mode=mode, dry_run=dry,
                                 engine=engine, validation=validation,
+                                save_audit=save_audit, save_reports=save_reports,
                                 notify=lambda msg: self.q.put(('log', str(msg))))
             self.q.put(('done', result))
         except Exception:

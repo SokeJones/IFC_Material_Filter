@@ -56,14 +56,17 @@ class PerformanceLog:
             self.records.append((label, elapsed, before, after, self._peak))
             self.notify(f'<<< {label}: {elapsed:.2f} s | RSS {after/2**20:.1f} MiB')
 
-    def save(self, filename):
+    def finish(self, filename=None):
         self._stop.set()
         if self._sample_thread:
             self._sample_thread.join(timeout=1)
         self._peak = max(self._peak, self._rss())
+        total = perf_counter() - self.started
+        if filename is None:
+            self.notify(f'Elapsed total: {total:.2f} s')
+            return {'elapsed_seconds': total, 'peak_rss_mib': self._peak/2**20, **self._counters}
         path = Path(filename)
         path.parent.mkdir(parents=True, exist_ok=True)
-        total = perf_counter() - self.started
         with path.open('w', newline='', encoding='utf-8-sig') as file:
             writer = csv.writer(file)
             writer.writerow(['engine','stage','duration_seconds','rss_before_mib','rss_after_mib','peak_rss_mib'])
@@ -77,3 +80,6 @@ class PerformanceLog:
                 writer.writerow([name, value])
         self.notify(f'Elapsed total: {total:.2f} s | Timing: {path}')
         return {'elapsed_seconds': total, 'peak_rss_mib': self._peak/2**20, 'timing_csv': str(path), **self._counters}
+
+    def save(self, filename):
+        return self.finish(filename)

@@ -24,3 +24,7 @@ The original IFC is never overwritten.
 - Output engine code, material matching, parent inclusion, geometry verification and material verification are unchanged.
 - Standard validation does not perform full schema checks. For unfamiliar models or consequential engineering deliverables, use Full or the optional verification tools.
 - The log records application progress messages and exception tracebacks, but not arbitrary stdout emitted by native third-party libraries.
+
+## v1.5.2 adjustments
+
+The Filter IFC button is centered and bold rather than full width. Selecting a new input IFC resets the progress indicator and status to ready, without clearing historical processing logs. Input selection is locked while an operation is running.

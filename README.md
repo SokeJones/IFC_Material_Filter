@@ -251,3 +251,20 @@ python material_verification.py original.ifc filtered_batch.ifc
 
 The Windows build is created with the existing `.github/workflows/build-windows.yml`
 GitHub Actions workflow. All integration tests run on the Windows runner.
+
+
+## v1.5.1 output saving preferences
+
+In **Advanced options > Export settings**, both **Save audit CSV** and **Save detailed reports** default to OFF. Standard GUI filtering writes only the final filtered IFC. Detailed reports includes timing CSVs and metrics, comparison JSON, reachability JSON, STEP-class CSV, and placement diagnostics; computation and essential validation continue even with reports OFF.
+
+**Audit only (CSV; do not export IFC)** remains a special mode and always writes an audit CSV. Independent geometry and material verification actions intentionally continue writing their requested comparison JSON outputs. Errors are always visible in the in-app processing log; STEP-pruning failures may also leave emergency diagnostics to aid recovery. Advanced 'Both' engine mode necessarily generates two IFC outputs.
+
+CLI behavior remains backward compatible; `--no-audit --no-reports` disables routine reports.
+
+## v1.5.2 UI refinement
+
+- The **Filter IFC** button is centered, bold, and has a fixed comfortable width.
+- Choosing or editing a different input IFC clears the previous progress animation, status message, and elapsed time.
+- During processing, the input filename field and Browse action cannot change the active source.
+- The processing log remains available for the entire session.
+- No changes to filter selection, output defaults, or report generation.

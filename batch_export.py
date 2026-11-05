@@ -311,7 +311,7 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
 
 
 def export_batch(model, output_path: Path, expected_ids, opening_ids, source_represented,
-                 notify=print, timings=None, validation='full', reachability_diagnostics=True):
+                 notify=print, timings=None, validation='full', reachability_diagnostics=True, save_reports=True):
     import ifcopenshell
     from extract_export import validate_extraction
     from validation_v14 import full_validate
@@ -322,6 +322,7 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         raise FileExistsError(f'Temporary output already exists: {temp}')
     def timed(label):
         return timings.stage(label) if timings else nullcontext()
+    reachability_diagnostics = bool(reachability_diagnostics and save_reports)
     reach_diag = ReachabilityDiagnostics(enabled=reachability_diagnostics)
     with timed('B00 Filter source graph'):
         stats = batch_filter(model, expected_ids, opening_ids, notify, timings, reach_diag)
@@ -344,7 +345,7 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         with timed('B07 Stream-prune unreachable STEP records'):
             try:
                 pruned = prune_serialized_ifc(raw, temp, reachable, notify,
-                                              class_report=out.with_suffix('.step_classes.csv'))
+                                              class_report=out.with_suffix('.step_classes.csv') if save_reports else None)
             except RuntimeError:
                 # Diagnose the missing ID against the actual edited IFC graph.
                 diag = temp.with_suffix('.step_prune_diagnostics.json')
@@ -373,7 +374,8 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
                 timings.count('batch_unpruned_bytes', pruned['input_bytes'])
                 timings.count('batch_pruned_bytes', pruned['output_bytes'])
         raw.unlink(missing_ok=True)
-        stats['step_class_report'] = str(out.with_suffix('.step_classes.csv'))
+        if save_reports:
+            stats['step_class_report'] = str(out.with_suffix('.step_classes.csv'))
         with timed('B08 Reopen batch output'):
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
@@ -388,11 +390,12 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
             # claim source/output error parity solely from error counts.
             from validation_v146 import orphan_placement_diagnostics
             details = orphan_placement_diagnostics(reopened)
-            details_path = out.with_suffix('.placement_diagnostics.json')
-            details_path.write_text(json.dumps(details, indent=2), encoding='utf-8')
-            report['placement_diagnostics'] = str(details_path)
             report['orphan_local_placements'] = len(details['orphan_placements'])
-            notify(f'Orphan placement diagnostics: {len(details["orphan_placements"]):,} findings, {details_path}')
+            if save_reports:
+                details_path = out.with_suffix('.placement_diagnostics.json')
+                details_path.write_text(json.dumps(details, indent=2), encoding='utf-8')
+                report['placement_diagnostics'] = str(details_path)
+            notify(f'Orphan placement diagnostics: {len(details["orphan_placements"]):,} findings')
         with timed('B11 Finalize batch output'):
             temp.replace(out)
         report.update(stats)

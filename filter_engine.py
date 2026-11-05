@@ -65,7 +65,8 @@ def find_matching_materials(roots, wanted: set[str]):
 def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                parent_mode: str = 'aggregates', audit_path: str | None = None,
                dry_run: bool = False, notify: Callable[[str], None] = print,
-               engine: str = 'both', validation: str = 'full'):
+               engine: str = 'both', validation: str = 'full',
+               save_audit: bool = True, save_reports: bool = True):
     import ifcopenshell
     from extract_export import export_and_validate
     from batch_export import export_batch
@@ -241,19 +242,21 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         # Retain openings but never count them as selected physical-material elements.
         keep_ids = selected | shells | opening_ids
 
-    with perf.stage('06 Write audit CSV'):
-        audit.parent.mkdir(parents=True, exist_ok=True)
-        with audit.open('w', newline='', encoding='utf-8-sig') as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
-                'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
-            writer.writeheader()
-            writer.writerows(rows)
-    notify(f'Audit CSV: {audit}')
+    if save_audit or dry_run:
+        with perf.stage('06 Write audit CSV'):
+            audit.parent.mkdir(parents=True, exist_ok=True)
+            with audit.open('w', newline='', encoding='utf-8-sig') as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
+                    'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
+                writer.writeheader()
+                writer.writerows(rows)
+        notify(f'Audit CSV: {audit}')
     timing_path = dst.with_suffix('.timing.csv')
     if dry_run:
-        perf.save(timing_path)
+        perf.finish(timing_path if save_reports else None)
         notify('Dry run finished; no IFC was written.')
-        return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path)}
+        return {'selected': len(selected), 'total': source_element_count,
+                'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path) if save_reports else None}
 
     # Common selection shared between both engines. Each engine has an isolated
     # output file and timing log. Batch reads a separate IFC instance.
@@ -264,7 +267,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                               if i in elem_by_id and elem_by_id[i].Representation is not None)
     perf.count('support_openings', len(support_openings))
     perf.count('support_shells', len(support_shells))
-    perf.save(timing_path)
+    perf.finish(timing_path if save_reports else None)
     results = {}
     errors = {}
     comparison_file = dst.with_suffix('.comparison.json')
@@ -297,7 +300,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                 report = export_batch(batch_model, target_path, expected_ids,
                                       support_openings | support_shells,
                                       source_represented, notify, timings=eng_perf,
-                                      validation=validation)
+                                      validation=validation, save_reports=save_reports)
                 del batch_model
             eng_perf.count('output_bytes', target_path.stat().st_size)
             eng_perf.count('output_elements', report['physical_count'])
@@ -308,8 +311,8 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
             notify(f'{name} engine FAILED: {exc}')
             # Do not suppress error in single-engine mode.
         finally:
-            results.setdefault(name, {})['timing'] = eng_perf.save(
-                target_path.with_suffix('.timing.csv'))
+            results.setdefault(name, {})['timing'] = eng_perf.finish(
+                target_path.with_suffix('.timing.csv') if save_reports else None)
     # Write even on partial failure to keep successful reference output usable.
     comparison = {
         'application_version': '1.4.6', 'engine_mode': engine,
@@ -340,19 +343,21 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                     'Counts are not directly equivalent for different-sized IFC graphs. '
                     'Positive difference is a concern; a negative difference does not prove correctness. '
                     'Review error categories and examples separately.')
-    comparison_file.parent.mkdir(parents=True, exist_ok=True)
-    with comparison_file.open('w', encoding='utf-8') as f:
-        json.dump(comparison, f, indent=2, ensure_ascii=False)
-    notify(f'Comparison: {comparison_file}')
+    if save_reports:
+        comparison_file.parent.mkdir(parents=True, exist_ok=True)
+        with comparison_file.open('w', encoding='utf-8') as f:
+            json.dump(comparison, f, indent=2, ensure_ascii=False)
+        notify(f'Comparison: {comparison_file}')
     if errors:
+        details = f'Details in {comparison_file}' if save_reports else 'See processing log.'
         raise RuntimeError(f'One or more engines failed: {", ".join(errors)}. '
-                           f'IfcPatch reference export (if successful) remains available. '
-                           f'Details in {comparison_file}')
+                           f'IfcPatch reference export (if successful) remains available. {details}')
     if comparison.get('parity', {}).get('equivalent') is False:
-        raise RuntimeError(f'Engine output mismatch; do not use experimental result. '
-                           f'Inspect {comparison_file}')
+        details = f'Inspect {comparison_file}' if save_reports else 'See processing log.'
+        raise RuntimeError(f'Engine output mismatch; do not use experimental result. {details}')
     return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts),
-            'audit': str(audit), 'comparison': str(comparison_file), 'engines': results}
+            'audit': str(audit) if (save_audit or dry_run) else None,
+            'comparison': str(comparison_file) if save_reports else None, 'engines': results}
 
 
 def output_paths(path: Path, engine: str) -> dict[str, Path]:
