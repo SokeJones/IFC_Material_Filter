@@ -32,6 +32,15 @@ class StepPruneTests(unittest.TestCase):
             out=q.read_bytes()
             self.assertIn(b'#1=IFCFOO(\n  #3,\n  $);',out)
             self.assertNotIn(b'#2=IFCBAR',out)
+    def test_step_zero_is_rejected_before_file_creation(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / 'in.ifc'
+            q = Path(td) / 'out.ifc'
+            p.write_bytes(b'DATA;\n#1=IFCWALL($);\nENDSEC;\n')
+            with self.assertRaisesRegex(ValueError, 'invalid STEP IDs'):
+                prune_serialized_ifc(p, q, {0, 1}, notify=lambda _: None)
+            self.assertFalse(q.exists())
+
     def test_missing_selected_id_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/'a.ifc';q=Path(td)/'b.ifc'

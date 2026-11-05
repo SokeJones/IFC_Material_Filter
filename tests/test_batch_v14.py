@@ -25,6 +25,13 @@ class BatchTests(unittest.TestCase):
         unused=Node(9)
         self.assertEqual(reachable_ids([one,two]), {1,2,5})
         self.assertNotIn(unused.id(),reachable_ids([one,two]))
+    def test_zero_id_transient_does_not_enter_serialized_keep_set(self):
+        # IFC inline/transient entities may report .id() == 0.
+        real = Node(7)
+        inline = Node(0, (real,))
+        root = Node(1, (inline,))
+        self.assertEqual(reachable_ids([root]), {1, 7})
+
     def test_forward_relationship_refs_are_discovered(self):
         item=Node(2)
         root=Node(1,((item,),))
