@@ -11,6 +11,9 @@ on:
       - 'reachability_diagnostics.py'
       - 'step_prune.py'
       - 'validation_v14.py'
+      - 'validation_v146.py'
+      - 'placement_repair.py'
+      - 'geometry_verification.py'
       - 'cli.py'
       - 'tests/**'
       - 'requirements.txt'
@@ -31,7 +34,7 @@ jobs:
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
       - name: Build standalone program
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate app.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate --hidden-import ifcopenshell.api.geometry.edit_object_placement --hidden-import ifcopenshell.geom app.py
       - name: Package portable EXE
         shell: pwsh
         run: Compress-Archive -Path dist/IFC_Material_Filter.exe -DestinationPath IFC_Material_Filter_Windows.zip
