@@ -1,19 +1,23 @@
-# IFC Material Filter v1.4.7 — Optional material verification
+# IFC Material Filter v1.5 — Simplified Windows interface
 
-**Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
+**Status:** GitHub Actions source/build kit for a portable Windows executable. No compiled EXE is included. Filtering and verification algorithms are unchanged from v1.4.7. The Batch Cleanup engine has passed structural, tessellated-geometry and effective-material comparisons on both the 40 MB and 360 MB project benchmark models; this does not guarantee correctness on arbitrary IFC files.
+
+## Everyday workflow
+
+1. Select an input IFC.
+2. Enter **Material names (one per line or separated by semicolons)**.
+3. Accept or change the output filename and click **Filter IFC**.
+4. Follow the animated progress indicator and status message. It is indeterminate, not a fabricated percentage.
+
+**Defaults:** Batch Cleanup, Standard (`basic`) validation, and `aggregates` parent handling. These settings can be changed under **Advanced options > Export settings...**. Geometry verification, material verification, and the scrollable, savable processing log are under **Advanced options > Verification tools**.
+
+The source IFC is never overwritten. Existing destinations are not overwritten. Optional verification actions do not slow down normal filtering.
+
+See [`V1_5_UI.md`](V1_5_UI.md) for the UI guide and limitations.
 
 ## Engines and outputs
 
-The interface defaults to `both`, `full` validation. With an output base name `filtered.ifc`, this creates:
-
-- `filtered_ifcpatch.ifc`: reference output from `ExtractElements` (as in v1.3).
-- `filtered_batch.ifc`: experimental output by detaching rejected elements from relationships and batch-removing unreachable IFC resources.
-- `filtered.audit.csv`: source GlobalIDs, material matches and selection reasons.
-- `filtered_ifcpatch.timing.csv` and `filtered_batch.timing.csv`: individual elapsed stage times and process RSS before/after/peak. Corresponding `*.timing.metrics.csv` contain entity and file-size counters.
-- `filtered.comparison.json`: both engines' results, validation messages, output sizes, selected-element parity checks, and any failure tracebacks.
-- `filtered.timing.csv` + `filtered.timing.metrics.csv`: common selection stages.
-
-For a single engine (`ifcpatch` or `batch`) the requested filename is used unchanged. `batch` mode is strictly experimental. Existing IFC files are never overwritten. Failed exports do not replace the final destination; incomplete output files are left with `.incomplete.ifc` in the name for diagnostics.
+In the default `batch` engine mode the requested output filename is used directly, along with audit/diagnostic reports. The optional `ifcpatch` mode creates a reference output; `both` produces `_batch.ifc` and `_ifcpatch.ifc` for benchmarking, plus a `*.comparison.json` report. Stage timing CSVs and diagnostic reports are written next to the output as before.
 
 ## Material semantics
 

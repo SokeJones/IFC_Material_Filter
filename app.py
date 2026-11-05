@@ -1,8 +1,13 @@
-"""Portable IFC material-filter GUI; packaged on Windows with PyInstaller."""
+"""IFC Material Filter v1.5: simple daily workflow, optional advanced tools.
+
+Keep engine logic in filter_engine unchanged. The GUI only dispatches to it.
+"""
 import queue
 import threading
+import time
 import traceback
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -12,70 +17,74 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.4.7 — Optional Material Verification')
-        self.geometry('870x735')
-        self.minsize(690, 540)
+        self.title('IFC Material Filter v1.5')
+        self.geometry('760x620')
+        self.minsize(620, 570)
         self.q = queue.Queue()
         self.worker = None
         self.filevar = tk.StringVar()
         self.outputvar = tk.StringVar()
         self.parentvar = tk.StringVar(value='aggregates')
         self.dryvar = tk.BooleanVar(value=False)
-        self.enginevar = tk.StringVar(value='both')
-        self.validationvar = tk.StringVar(value='full')
+        # Normal use: only the previously benchmarked Batch Cleanup engine.
+        self.enginevar = tk.StringVar(value='batch')
+        self.validationvar = tk.StringVar(value='basic')
+        self.statusvar = tk.StringVar(value='Ready to filter an IFC model.')
+        self.stagevar = tk.StringVar(value='')
+        self.log_lines = []
+        self.log_window = None
+        self.log_text = None
+        self.operation_start = None
         self._layout()
-        self.after(100, self._poll)
+        self.after(120, self._poll)
 
     def _layout(self):
-        outer = ttk.Frame(self, padding=16)
+        menubar = tk.Menu(self)
+        advanced = tk.Menu(menubar, tearoff=False)
+        advanced.add_command(label='Export settings...', command=self._advanced_settings)
+        advanced.add_separator()
+        verification = tk.Menu(advanced, tearoff=False)
+        verification.add_command(label='Verify geometry...', command=self._start_verify)
+        verification.add_command(label='Verify materials...', command=self._start_material_verify)
+        verification.add_separator()
+        verification.add_command(label='View processing log...', command=self._open_log)
+        advanced.add_cascade(label='Verification tools', menu=verification)
+        menubar.add_cascade(label='Advanced options', menu=advanced)
+        self.config(menu=menubar)
+
+        outer = ttk.Frame(self, padding=22)
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='Filter IFC by material', font=('Segoe UI', 17, 'bold')).pack(anchor='w')
-        ttk.Label(outer, text='Enter one material per line. Any matching material is enough to retain an element.').pack(anchor='w', pady=(3, 15))
-        frm = ttk.Frame(outer)
-        frm.pack(fill='x')
-        ttk.Label(frm, text='Source IFC').pack(anchor='w')
-        f1 = ttk.Frame(frm)
-        f1.pack(fill='x', pady=(3, 9))
-        ttk.Entry(f1, textvariable=self.filevar).pack(side='left', fill='x', expand=True, padx=(0, 8))
-        ttk.Button(f1, text='Browse...', command=self._source).pack(side='left')
-        ttk.Label(frm, text='Save filtered IFC as').pack(anchor='w')
-        f2 = ttk.Frame(frm)
-        f2.pack(fill='x', pady=(3, 12))
-        ttk.Entry(f2, textvariable=self.outputvar).pack(side='left', fill='x', expand=True, padx=(0, 8))
-        ttk.Button(f2, text='Browse...', command=self._destination).pack(side='left')
-        ttk.Label(outer, text='Material names (one per line or separated by semicolons)').pack(anchor='w')
-        self.materials = tk.Text(outer, height=6, wrap='word', undo=True)
-        self.materials.pack(fill='x', pady=(4, 12))
-        self.materials.insert('1.0', 'Stahlbeton Schweiz\n')
+        ttk.Label(outer, text='IFC Material Filter', font=('Segoe UI', 18, 'bold')).pack(anchor='w')
+        ttk.Label(outer, text='Create a smaller IFC containing elements with the selected materials.').pack(anchor='w', pady=(5, 19))
+
+        ttk.Label(outer, text='Input IFC file').pack(anchor='w')
         r = ttk.Frame(outer)
-        r.pack(fill='x', pady=(0, 10))
-        ttk.Label(r, text='Include unassigned children of matching parents:').pack(side='left', padx=(0, 8))
-        ttk.Combobox(r, textvariable=self.parentvar, state='readonly', width=22,
-                     values=['none','aggregates','aggregates+nests']).pack(side='left')
-        e = ttk.Frame(outer)
-        e.pack(fill='x', pady=(0, 8))
-        ttk.Label(e, text='Export engine:').pack(side='left', padx=(0, 8))
-        ttk.Combobox(e, textvariable=self.enginevar, state='readonly', width=22,
-                     values=['both','ifcpatch','batch']).pack(side='left', padx=(0, 22))
-        ttk.Label(e, text='Validation:').pack(side='left', padx=(0, 8))
-        ttk.Combobox(e, textvariable=self.validationvar, state='readonly', width=12,
-                     values=['full','basic']).pack(side='left')
-        ttk.Label(outer, text='Both: creates _ifcpatch.ifc and _batch.ifc; Batch Cleanup is EXPERIMENTAL.',
-                  foreground='#A04A17').pack(anchor='w', pady=(0, 5))
-        ttk.Checkbutton(outer, text='Audit only (CSV, no IFC export)', variable=self.dryvar).pack(anchor='w', pady=(0, 12))
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill='x')
-        self.runbutton = ttk.Button(buttons, text='Start filter', command=self._start)
-        self.runbutton.pack(side='left')
-        self.verifybutton = ttk.Button(buttons, text='Verify geometry...', command=self._start_verify)
-        self.verifybutton.pack(side='left', padx=(8, 0))
-        self.materialverifybutton = ttk.Button(buttons, text='Verify materials...', command=self._start_material_verify)
-        self.materialverifybutton.pack(side='left', padx=(8, 0))
-        ttk.Button(buttons, text='Clear log', command=lambda: self.log.delete('1.0', 'end')).pack(side='left', padx=8)
-        ttk.Label(outer, text='Processing log').pack(anchor='w', pady=(13, 3))
-        self.log = tk.Text(outer, height=12, wrap='word', state='normal')
-        self.log.pack(fill='both', expand=True)
-        ttk.Label(outer, text='Original IFC is never overwritten. Exact material names; case-insensitive.').pack(anchor='w', pady=(8, 0))
+        r.pack(fill='x', pady=(4, 14))
+        ttk.Entry(r, textvariable=self.filevar).pack(side='left', fill='x', expand=True, padx=(0, 9))
+        ttk.Button(r, text='Browse...', command=self._source).pack(side='left')
+
+        ttk.Label(outer, text='Material names').pack(anchor='w')
+        self.materials = tk.Text(outer, height=4, wrap='word', undo=True, font=('Segoe UI', 10))
+        self.materials.pack(fill='x', pady=(4, 2))
+        self.materials.insert('1.0', 'Stahlbeton Schweiz\n')
+        ttk.Label(outer, text='One per line or separated by semicolons.', foreground='#666666').pack(anchor='w', pady=(0, 14))
+
+        ttk.Label(outer, text='Output IFC file').pack(anchor='w')
+        r = ttk.Frame(outer)
+        r.pack(fill='x', pady=(4, 16))
+        ttk.Entry(r, textvariable=self.outputvar).pack(side='left', fill='x', expand=True, padx=(0, 9))
+        ttk.Button(r, text='Browse...', command=self._destination).pack(side='left')
+
+        self.runbutton = ttk.Button(outer, text='Filter IFC', command=self._start)
+        self.runbutton.pack(fill='x', ipady=6)
+        progress = ttk.Frame(outer)
+        progress.pack(fill='x', pady=(17, 2))
+        ttk.Label(progress, textvariable=self.statusvar).pack(side='left')
+        self.progress = ttk.Progressbar(outer, orient='horizontal', mode='indeterminate')
+        self.progress.pack(fill='x', pady=(6, 3))
+        ttk.Label(outer, textvariable=self.stagevar, foreground='#666666').pack(anchor='w')
+        ttk.Label(outer, text='Original IFC is never overwritten. Material names match exactly (case-insensitive).',
+                  foreground='#666666').pack(anchor='w', pady=(17, 0))
 
     def _source(self):
         path = filedialog.askopenfilename(filetypes=[('IFC models', '*.ifc'), ('All files', '*.*')])
@@ -84,91 +93,178 @@ class FilterApp(tk.Tk):
             self.outputvar.set(str(Path(path).with_name(Path(path).stem + '_filtered.ifc')))
 
     def _destination(self):
-        path = filedialog.asksaveasfilename(defaultextension='.ifc', filetypes=[('IFC models','*.ifc')])
+        path = filedialog.asksaveasfilename(defaultextension='.ifc', filetypes=[('IFC models', '*.ifc')])
         if path:
             self.outputvar.set(path)
 
+    def _advanced_settings(self):
+        if getattr(self, 'settings_window', None) and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            return
+        win = tk.Toplevel(self)
+        self.settings_window = win
+        win.title('Advanced options — Export settings')
+        win.resizable(False, False)
+        panel = ttk.Frame(win, padding=20)
+        panel.pack(fill='both', expand=True)
+        ttk.Label(panel, text='Export engine', font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        for value, label in [('batch', 'Batch Cleanup (recommended)'),
+                             ('ifcpatch', 'IfcPatch (reference)'),
+                             ('both', 'Both (benchmark comparison)')]:
+            ttk.Radiobutton(panel, text=label, value=value, variable=self.enginevar).pack(anchor='w', pady=3)
+        ttk.Separator(panel).pack(fill='x', pady=10)
+        ttk.Label(panel, text='Validation level', font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        ttk.Radiobutton(panel, text='Standard (recommended)', value='basic', variable=self.validationvar).pack(anchor='w', pady=3)
+        ttk.Radiobutton(panel, text='Full schema validation', value='full', variable=self.validationvar).pack(anchor='w', pady=3)
+        ttk.Separator(panel).pack(fill='x', pady=10)
+        ttk.Label(panel, text='Include unassigned children of matching parents').pack(anchor='w')
+        ttk.Combobox(panel, textvariable=self.parentvar, state='readonly', width=26,
+                     values=('none', 'aggregates', 'aggregates+nests')).pack(anchor='w', pady=(5, 8))
+        ttk.Checkbutton(panel, text='Audit only (CSV; do not export IFC)', variable=self.dryvar).pack(anchor='w')
+        ttk.Label(panel, text='Settings apply to the next filtering operation.', foreground='#666666').pack(anchor='w', pady=(14, 8))
+        ttk.Button(panel, text='Close', command=win.destroy).pack(anchor='e')
+        win.transient(self)
+
+    def _open_log(self):
+        if self.log_window is not None and self.log_window.winfo_exists():
+            self.log_window.lift()
+            return
+        win = tk.Toplevel(self)
+        self.log_window = win
+        win.title('Processing log — IFC Material Filter')
+        win.geometry('850x500')
+        win.minsize(540, 300)
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='Current session processing log').pack(anchor='w', pady=(0, 8))
+        body = ttk.Frame(frame)
+        body.pack(fill='both', expand=True)
+        scroll = ttk.Scrollbar(body)
+        scroll.pack(side='right', fill='y')
+        self.log_text = tk.Text(body, wrap='none', state='disabled', font=('Consolas', 9), yscrollcommand=scroll.set)
+        self.log_text.pack(side='left', fill='both', expand=True)
+        scroll.configure(command=self.log_text.yview)
+        controls = ttk.Frame(frame)
+        controls.pack(fill='x', pady=(10, 0))
+        ttk.Button(controls, text='Save log...', command=self._save_log).pack(side='left')
+        ttk.Button(controls, text='Copy all', command=self._copy_log).pack(side='left', padx=8)
+        ttk.Button(controls, text='Close', command=win.destroy).pack(side='right')
+        self._append_text('\n'.join(self.log_lines) + ('\n' if self.log_lines else ''))
+        win.protocol('WM_DELETE_WINDOW', win.destroy)
+
+    def _append_text(self, value):
+        if self.log_window is None or not self.log_window.winfo_exists():
+            return
+        self.log_text.configure(state='normal')
+        self.log_text.insert('end', value)
+        self.log_text.see('end')
+        self.log_text.configure(state='disabled')
+
+    def _log(self, message):
+        stamp = datetime.now().strftime('%H:%M:%S')
+        line = f'[{stamp}] {message}'
+        self.log_lines.append(line)
+        self._append_text(line + '\n')
+
+    def _save_log(self):
+        path = filedialog.asksaveasfilename(defaultextension='.txt', filetypes=[('Text log', '*.txt')])
+        if path:
+            try:
+                Path(path).write_text('\n'.join(self.log_lines) + '\n', encoding='utf-8')
+            except OSError as error:
+                messagebox.showerror('Save log failed', str(error))
+
+    def _copy_log(self):
+        self.clipboard_clear()
+        self.clipboard_append('\n'.join(self.log_lines))
+
+    def _busy(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def _begin(self, title):
+        self.operation_start = time.monotonic()
+        self.runbutton.configure(state='disabled')
+        self.statusvar.set(title)
+        self.stagevar.set('Initializing...')
+        self.progress.start(14)
+        self._log('--- ' + title + ' ---')
+
+    def _finish(self, message):
+        self.progress.stop()
+        self.runbutton.configure(state='normal')
+        self.statusvar.set(message)
+        if self.operation_start is not None:
+            elapsed = time.monotonic() - self.operation_start
+            self.stagevar.set(f'Elapsed: {elapsed:.1f} seconds')
+        self._log(message)
+
     def _start(self):
-        infile = self.filevar.get().strip()
-        outfile = self.outputvar.get().strip()
-        materials = parse_materials(self.materials.get('1.0','end'))
+        if self._busy():
+            messagebox.showwarning('Processing', 'Finish the current operation first.')
+            return
+        infile, outfile = self.filevar.get().strip(), self.outputvar.get().strip()
+        materials = parse_materials(self.materials.get('1.0', 'end'))
         if not infile or not outfile or not materials:
             messagebox.showerror('Missing input', 'Select input IFC and output file, and enter at least one material.')
             return
+        if not Path(infile).is_file():
+            messagebox.showerror('Input missing', 'The selected source IFC does not exist.')
+            return
         from filter_engine import output_paths
         if not self.dryvar.get() and any(p.exists() for p in output_paths(Path(outfile), self.enginevar.get()).values()):
-            messagebox.showerror('Output exists', 'Choose another output filename. Existing files are never overwritten.')
+            messagebox.showerror('Output exists', 'Choose another output filename. Existing IFC files are never overwritten.')
             return
-        self.runbutton.configure(state='disabled')
-        self.log.insert('end', f'Filtering for: {", ".join(materials)}\n')
-        self.log.see('end')
-        options = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get(),
-                   self.enginevar.get(), self.validationvar.get())
-        self.worker = threading.Thread(target=self._work, args=(options,), daemon=True)
+        opts = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get(),
+                self.enginevar.get(), self.validationvar.get())
+        self._begin('Filtering IFC...')
+        self._log('Selected materials: ' + '; '.join(materials))
+        self._log('Engine: ' + self.enginevar.get() + '; validation: ' + self.validationvar.get())
+        self.worker = threading.Thread(target=self._work, args=(opts,), daemon=True)
         self.worker.start()
 
     def _start_verify(self):
-        if self.worker is not None and self.worker.is_alive():
-            messagebox.showwarning('Processing', 'Finish the current operation first.')
-            return
-        source = self.filevar.get().strip()
-        if not source or not Path(source).is_file():
-            messagebox.showerror('Missing source', 'Select the original IFC in Source IFC.')
-            return
-        filtered = filedialog.askopenfilename(title='Choose already filtered IFC to compare',
-                                               filetypes=[('IFC models', '*.ifc')])
-        if not filtered:
-            return
-        self.runbutton.configure(state='disabled')
-        self.verifybutton.configure(state='disabled')
-        self.worker = threading.Thread(target=self._verify_work,
-                                       args=(source, filtered), daemon=True)
-        self.worker.start()
+        self._begin_verification('geometry')
 
     def _start_material_verify(self):
-        if self.worker is not None and self.worker.is_alive():
+        self._begin_verification('materials')
+
+    def _begin_verification(self, kind):
+        if self._busy():
             messagebox.showwarning('Processing', 'Finish the current operation first.')
             return
         source = self.filevar.get().strip()
         if not source or not Path(source).is_file():
-            messagebox.showerror('Missing source', 'Select the original IFC in Source IFC.')
+            messagebox.showerror('Missing source', 'Select the original IFC in Input IFC file.')
             return
-        filtered = filedialog.askopenfilename(title='Choose filtered IFC to compare materials',
-                                               filetypes=[('IFC models', '*.ifc')])
+        filtered = filedialog.askopenfilename(title='Select filtered IFC for verification', filetypes=[('IFC models', '*.ifc')])
         if not filtered:
             return
-        self.runbutton.configure(state='disabled')
-        self.verifybutton.configure(state='disabled')
-        self.materialverifybutton.configure(state='disabled')
-        self.worker = threading.Thread(target=self._material_verify_work,
-                                       args=(source, filtered), daemon=True)
+        if Path(source).resolve() == Path(filtered).resolve():
+            messagebox.showerror('Invalid comparison', 'Select two different IFC files.')
+            return
+        self._begin('Verifying ' + kind + '...')
+        self.worker = threading.Thread(target=self._verify_work, args=(kind, source, filtered), daemon=True)
         self.worker.start()
-
-    def _material_verify_work(self, source, filtered):
-        try:
-            from material_verification import compare_materials
-            report = compare_materials(source, filtered,
-                                       notify=lambda msg: self.q.put(('log', msg)))
-            self.q.put(('materials_done', report))
-        except Exception:
-            self.q.put(('error', traceback.format_exc()))
-
-    def _verify_work(self, source, filtered):
-        try:
-            from geometry_verification import compare_geometry
-            result = compare_geometry(source, filtered,
-                                      notify=lambda msg: self.q.put(('log', msg)))
-            self.q.put(('verify_done', result))
-        except Exception:
-            self.q.put(('error', traceback.format_exc()))
 
     def _work(self, options):
         try:
             source, dest, materials, mode, dry, engine, validation = options
             result = export_ifc(source, dest, materials, parent_mode=mode, dry_run=dry,
                                 engine=engine, validation=validation,
-                                notify=lambda msg: self.q.put(('log', msg)))
+                                notify=lambda msg: self.q.put(('log', str(msg))))
             self.q.put(('done', result))
+        except Exception:
+            self.q.put(('error', traceback.format_exc()))
+
+    def _verify_work(self, kind, source, filtered):
+        try:
+            if kind == 'geometry':
+                from geometry_verification import compare_geometry
+                result = compare_geometry(source, filtered, notify=lambda msg: self.q.put(('log', str(msg))))
+            else:
+                from material_verification import compare_materials
+                result = compare_materials(source, filtered, notify=lambda msg: self.q.put(('log', str(msg))))
+            self.q.put((kind + '_done', result))
         except Exception:
             self.q.put(('error', traceback.format_exc()))
 
@@ -177,32 +273,23 @@ class FilterApp(tk.Tk):
             while True:
                 kind, data = self.q.get_nowait()
                 if kind == 'log':
-                    self.log.insert('end', str(data) + '\n')
-                    self.log.see('end')
+                    self._log(str(data))
+                    self.stagevar.set(str(data)[:115])
                 elif kind == 'done':
-                    self.runbutton.configure(state='normal')
-                    self.verifybutton.configure(state='normal')
-                    self.materialverifybutton.configure(state='normal')
-                    messagebox.showinfo('Completed', 'Processing finished. See the log and audit CSV for results.')
-                elif kind == 'verify_done':
-                    self.runbutton.configure(state='normal')
-                    self.verifybutton.configure(state='normal')
-                    self.materialverifybutton.configure(state='normal')
+                    self._finish('Filtering completed successfully.')
+                    messagebox.showinfo('Completed', 'IFC filtering completed. Details are available in Advanced options > Verification tools > View processing log.')
+                elif kind == 'geometry_done':
+                    self._finish('Geometry verification completed.')
                     messagebox.showinfo('Geometry verification',
-                        f"Verified: {data['geometry_verified']}\nDifferences: {data['mismatches']}\nUnverified: {data['geometry_unverified']}\nSee JSON report.")
+                                        f"Verified: {data['geometry_verified']}\nDifferences: {data['mismatches']}\nUnverified: {data['geometry_unverified']}\nSee JSON report.")
                 elif kind == 'materials_done':
-                    self.runbutton.configure(state='normal')
-                    self.verifybutton.configure(state='normal')
-                    self.materialverifybutton.configure(state='normal')
+                    self._finish('Material verification completed.')
                     messagebox.showinfo('Material verification',
-                        f"Equivalent: {data['material_equivalent']}\nDifferences: {data['material_mismatches']}\nUnverified: {data['material_unverified']}\nSee JSON report.")
+                                        f"Equivalent: {data['material_equivalent']}\nDifferences: {data['material_mismatches']}\nUnverified: {data['material_unverified']}\nSee JSON report.")
                 elif kind == 'error':
-                    self.runbutton.configure(state='normal')
-                    self.verifybutton.configure(state='normal')
-                    self.materialverifybutton.configure(state='normal')
-                    self.log.insert('end', 'ERROR\n' + data + '\n')
-                    self.log.see('end')
-                    messagebox.showerror('Failed', 'Processing failed. See the log for details.')
+                    self._log('ERROR\n' + str(data))
+                    self._finish('Processing failed. See processing log.')
+                    messagebox.showerror('Failed', 'Processing failed. Open Advanced options > Verification tools > View processing log for details.')
         except queue.Empty:
             pass
         self.after(120, self._poll)
