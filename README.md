@@ -98,3 +98,30 @@ benchmark mode releases the selection model before running Batch Cleanup.
 
 The reference IfcPatch engine is unchanged. Please benchmark the experimental
 output against the reference, including visual geometry/placement verification.
+
+## v1.4.2 diagnostic update
+
+The previous 1.4.1 benchmark showed 127,372 reachable STEP IDs but only
+127,371 serialized records, so the experimental engine refused to publish.
+Version 1.4.2 **does not assume that missing record is harmless**. Instead:
+
+- It records all missing expected STEP IDs and duplicate serialized IDs in
+  `*_batch.incomplete.step_prune_diagnostics.json` (the naming depends on the
+  specified output path). The report survives a failed export.
+- It enriches missing IDs with IFC entity class, GlobalID where available,
+  and inverse-reference count from the in-memory graph.
+- It validates the **source IFC** before either engine runs (in Full mode)
+  and includes `source_validation` plus simple error-count differences in
+  `.comparison.json`. These totals are **not normalized by graph size**;
+  review error categories rather than interpreting the difference as a
+  definitive introduced-error count.
+- It refuses to publish batch output if STEP records are missing or duplicate.
+- The proven IfcPatch export path and multi-material selection are unchanged.
+
+Please rerun the same benchmark and share `.comparison.json` and the new
+`*.step_prune_diagnostics.json`. They will identify the precise entity behind
+this issue. This is a **diagnostic version**, not a confirmed resolution.
+
+**Important:** Your v1.4.1 reference export logged 9,941 schema validation
+errors. A model opening in a viewer does not prove those are harmless; the
+source baseline check helps decide how to investigate.

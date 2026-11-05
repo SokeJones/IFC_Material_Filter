@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from pathlib import Path
 
 RECORD_START = re.compile(rb'^\s*#([0-9]+)\s*=')
@@ -35,6 +36,9 @@ def prune_serialized_ifc(source: Path, destination: Path, keep_ids: set[int],
         raise ValueError('No STEP entity IDs were selected')
     written = 0
     skipped = 0
+    found_keep_ids = set()
+    duplicate_ids = set()
+    all_seen_ids = set()
     read_bytes = 0
     checkpoint = report_every_bytes
     current_id = None
@@ -54,6 +58,9 @@ def prune_serialized_ifc(source: Path, destination: Path, keep_ids: set[int],
                     if current_id is not None:
                         raise ValueError(f'Unexpected STEP record start while #{current_id} is incomplete')
                     current_id = int(match.group(1))
+                    if current_id in all_seen_ids:
+                        duplicate_ids.add(current_id)
+                    all_seen_ids.add(current_id)
                     current_keep = current_id in keep_ids
                     pending = []
                 if current_id is not None:
@@ -63,6 +70,7 @@ def prune_serialized_ifc(source: Path, destination: Path, keep_ids: set[int],
                         if current_keep:
                             out.writelines(pending)
                             written += 1
+                            found_keep_ids.add(current_id)
                         else:
                             skipped += 1
                         current_id = None
@@ -80,9 +88,26 @@ def prune_serialized_ifc(source: Path, destination: Path, keep_ids: set[int],
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
-    if written != len(keep_ids):
+    missing_ids = sorted(keep_ids - found_keep_ids)
+    if missing_ids or duplicate_ids:
+        # The diagnostics report survives, but an incomplete IFC is never published.
+        diagnostics = {
+            'expected_keep_records': len(keep_ids),
+            'written_records': written,
+            'missing_ids_count': len(missing_ids),
+            'missing_ids': missing_ids[:100],
+            'duplicate_step_ids_count': len(duplicate_ids),
+            'duplicate_step_ids': sorted(duplicate_ids)[:100],
+            'serialized_total_step_ids': len(all_seen_ids),
+            'source': str(source),
+        }
+        diagnostic_path = destination.with_suffix('.step_prune_diagnostics.json')
+        diagnostic_path.write_text(json.dumps(diagnostics, indent=2), encoding='utf-8')
         destination.unlink(missing_ok=True)
-        raise RuntimeError(f'STEP prune expected {len(keep_ids):,} kept records, '
-                           f'but wrote {written:,}; refusing output')
+        raise RuntimeError(
+            f'STEP prune mismatch: expected {len(keep_ids):,} kept records, '
+            f'wrote {written:,}; missing STEP IDs: {missing_ids[:20]}; '
+            f'duplicates: {sorted(duplicate_ids)[:10]}. '
+            f'Diagnostics: {diagnostic_path}. Refusing output.')
     return {'records_kept': written, 'records_removed': skipped,
             'input_bytes': read_bytes, 'output_bytes': destination.stat().st_size}

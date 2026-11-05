@@ -10,6 +10,7 @@ This engine requires independent comparison before production use.
 from __future__ import annotations
 from collections import deque
 from pathlib import Path
+import json
 
 
 def _same_entity(value, target):
@@ -175,7 +176,30 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         with timed('B06 Serialize edited IFC for streaming cleanup'):
             model.write(str(raw))
         with timed('B07 Stream-prune unreachable STEP records'):
-            pruned = prune_serialized_ifc(raw, temp, reachable, notify)
+            try:
+                pruned = prune_serialized_ifc(raw, temp, reachable, notify)
+            except RuntimeError:
+                # Diagnose the missing ID against the actual edited IFC graph.
+                diag = temp.with_suffix('.step_prune_diagnostics.json')
+                if diag.exists():
+                    data = json.loads(diag.read_text(encoding='utf-8'))
+                    descriptions = []
+                    for eid in data.get('missing_ids', []):
+                        try:
+                            entity = model.by_id(int(eid))
+                            descriptions.append({
+                                'step_id': eid,
+                                'ifc_class': entity.is_a(),
+                                'global_id': getattr(entity, 'GlobalId', None),
+                                'inverse_references': len(model.get_inverse(entity)),
+                            })
+                        except (RuntimeError, TypeError, ValueError) as exc:
+                            descriptions.append({'step_id': eid, 'lookup_error': str(exc)})
+                    data['missing_entity_details'] = descriptions
+                    diag.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                    notify(f'STEP pruning diagnostic: {diag}')
+                    notify(f'Missing entity details: {descriptions[:5]}')
+                raise
             if timings:
                 timings.count('batch_records_written', pruned['records_kept'])
                 timings.count('batch_records_pruned', pruned['records_removed'])

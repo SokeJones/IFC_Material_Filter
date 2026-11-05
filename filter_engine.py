@@ -12,6 +12,7 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Callable
 from performance import PerformanceLog
+from validation_v14 import full_validate
 
 
 def parse_materials(value: str | list[str]) -> list[str]:
@@ -107,6 +108,10 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
     perf.count('source_file_bytes', src.stat().st_size)
     source_element_count = len(elements)
     perf.count('source_elements', source_element_count)
+    source_validation = None
+    if validation == 'full' and not dry_run:
+        with perf.stage('02b Validate original IFC baseline'):
+            source_validation = full_validate(model, notify)
 
     # Retrieve effective material: occurrence-level association takes precedence over type.
     # IfcOpenShell's get_material() handles IFC2X3 and IFC4 type relationships.
@@ -307,13 +312,14 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                 target_path.with_suffix('.timing.csv'))
     # Write even on partial failure to keep successful reference output usable.
     comparison = {
-        'application_version': '1.4.1', 'engine_mode': engine,
+        'application_version': '1.4.2', 'engine_mode': engine,
         'validation_mode': validation, 'input': str(src),
         'materials': wanted_names, 'parent_mode': parent_mode,
         'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
         'support_openings': len(support_openings), 'engines': results,
         'errors': errors,
-    }
+        'source_validation': source_validation,
+        }
     if engine == 'both' and all('path' in results.get(k, {}) for k in ('ifcpatch', 'batch')):
         ratio = results['batch']['bytes'] / max(results['ifcpatch']['bytes'], 1)
         comparison['batch_to_reference_size_ratio'] = ratio
@@ -324,6 +330,16 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
             comparison['parity'] = compare_outputs(results['ifcpatch']['path'],
                                                     results['batch']['path'], expected_ids,
                                                     source_represented)
+    if source_validation is not None:
+        for engine_name, details in results.items():
+            val = details.get('validation')
+            if isinstance(val, dict) and 'schema_validation_errors' in val:
+                val['schema_errors_vs_source'] = (
+                    val['schema_validation_errors'] - source_validation['schema_validation_errors'])
+                val['schema_validation_comparison_note'] = (
+                    'Counts are not directly equivalent for different-sized IFC graphs. '
+                    'Positive difference is a concern; a negative difference does not prove correctness. '
+                    'Review error categories and examples separately.')
     comparison_file.parent.mkdir(parents=True, exist_ok=True)
     with comparison_file.open('w', encoding='utf-8') as f:
         json.dump(comparison, f, indent=2, ensure_ascii=False)
