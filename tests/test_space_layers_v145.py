@@ -87,3 +87,37 @@ class SpaceLayerIntegration(unittest.TestCase):
             self.assertEqual(layer.AssignedItems[0].id(), result.by_type('IfcWall')[0].Representation.Representations[0].id())
 
 if __name__ == '__main__': unittest.main()
+
+# v1.4.6: the Windows integration runner executes this against real IfcOpenShell.
+@unittest.skipIf(ifcopenshell is None, 'Requires IfcOpenShell on GitHub Actions Windows runner')
+class ReparentedPlacementIntegration(unittest.TestCase):
+    def test_reparent_preserves_global_placement_and_removes_space(self):
+        import numpy as np
+        import ifcopenshell.util.placement
+        f = ifcopenshell.file(schema='IFC4')
+        p = f.create_entity('IfcProject', GlobalId=ifcopenshell.guid.new())
+        unit = f.create_entity('IfcSIUnit', UnitType='LENGTHUNIT', Name='METRE')
+        p.UnitsInContext = f.create_entity('IfcUnitAssignment', Units=[unit])
+        storey = f.create_entity('IfcBuildingStorey', GlobalId=ifcopenshell.guid.new())
+        space = f.create_entity('IfcSpace', GlobalId=ifcopenshell.guid.new())
+        wall = f.create_entity('IfcWall', GlobalId=ifcopenshell.guid.new())
+        f.create_entity('IfcRelAggregates', GlobalId=ifcopenshell.guid.new(),
+                        RelatingObject=p, RelatedObjects=[storey])
+        f.create_entity('IfcRelAggregates', GlobalId=ifcopenshell.guid.new(),
+                        RelatingObject=storey, RelatedObjects=[space])
+        f.create_entity('IfcRelContainedInSpatialStructure', GlobalId=ifcopenshell.guid.new(),
+                        RelatingStructure=space, RelatedElements=[wall])
+        def placement(parent, x):
+            point=f.create_entity('IfcCartesianPoint', Coordinates=(float(x),0.,0.))
+            axis=f.create_entity('IfcAxis2Placement3D', Location=point)
+            return f.create_entity('IfcLocalPlacement', PlacementRelTo=parent, RelativePlacement=axis)
+        storey.ObjectPlacement = placement(None, 100)
+        space.ObjectPlacement = placement(storey.ObjectPlacement, 10)
+        wall.ObjectPlacement = placement(space.ObjectPlacement, 3)
+        old = ifcopenshell.util.placement.get_placement(wall.ObjectPlacement, should_return_si=True)
+        removed, moved = remove_unselected_spaces(f, lambda _:None)
+        self.assertEqual((removed,moved),(1,1))
+        new = ifcopenshell.util.placement.get_placement(wall.ObjectPlacement, should_return_si=True)
+        self.assertTrue(np.allclose(old,new, atol=1e-7))
+        self.assertEqual(wall.ObjectPlacement.PlacementRelTo, storey.ObjectPlacement)
+        self.assertEqual(len(f.by_type('IfcSpace')),0)
