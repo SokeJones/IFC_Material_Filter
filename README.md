@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4.3 — Two-engine benchmark (experimental)
+# IFC Material Filter v1.4.4 — Reachability diagnostic benchmark (experimental)
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -147,3 +147,25 @@ This fixes the specific reported v1.4.2 error, but the experimental Batch
 Cleanup engine still requires IFC schema/geometry review. Input model has
 10,453 schema errors and the IfcPatch output 9,978; these are not resolved by
 this fix. Test both engines and compare the compact outputs in BIMcollab Zoom.
+
+## v1.4.4: reachability profiling (diagnostic, non-behaviour-changing)
+
+This version deliberately **does not alter the v1.4.3 keep/remove rules**. It
+instruments the graph traversal to identify why the 365 MB model retains far
+more STEP resources than the smaller model. Every Batch Cleanup run generates:
+
+- `*_batch.reachability.json`: retained entity counts by IFC class, first
+  discovery mechanism (root/forward/inverse), number and classes of inverse
+  relationships traversed, and a bounded list of the largest inverse-fanout
+  sources including GlobalIDs where available. It is written immediately after
+  graph traversal, even if later export stages fail.
+- `*_batch.step_classes.csv`: STEP entity counts and serialized bytes retained
+  vs pruned, grouped by IFC class and sorted by retained byte size. This is
+  written after a successful streaming prune (before model validation).
+
+The diagnostics capture *first* discovery paths, not a formal proof of the
+unique cause of reachability: an entity may have several references. This
+release retains the full v1.4.3 filtering and validation logic; it adds
+performance overhead and should not be interpreted as a speed optimization.
+Compare the class reports from the 40 MB and 365 MB models, then change the
+traversal based on those findings in a separate version.

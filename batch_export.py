@@ -8,7 +8,8 @@ Never operate on the same file object as the reference extraction engine.
 This engine requires independent comparison before production use.
 """
 from __future__ import annotations
-from collections import deque
+from collections import deque, Counter
+from reachability_diagnostics import ReachabilityDiagnostics
 from pathlib import Path
 import json
 
@@ -69,30 +70,46 @@ def live_roots(model, keep_guids):
     return roots
 
 
-def reachable_ids(roots, model=None):
-    """Forward reachability plus relationships attached to live objects/types.
+def reachable_ids(roots, model=None, diagnostics=None, notify=None):
+    """Preserve v1.4.3 reachability semantics, optionally record bounded diagnostics.
 
-    IFC relationship entities are stored on the inverse side of an element,
-    hence a forward-only traversal would drop material/type/pset relationships.
-    Conversely, traversing inverses on a shared IfcMaterial can pull in huge
-    unrelated portions of the model: never do that.
+    A diagnostic edge records how an object was FIRST discovered, not all
+    the possible paths to it. No material/resource inverse traversal is added.
     """
     seen = set()
-    pending = deque(roots)
+    tracing = diagnostics is not None and diagnostics.enabled
+    if tracing:
+        roots = list(roots)
+        for obj in roots:
+            diagnostics.root(obj)
+        pending = deque((obj, 'root', '') for obj in roots)
+    else:
+        pending = deque(roots)
     while pending:
-        obj = pending.pop()
+        if tracing:
+            obj, inbound, source_class = pending.pop()
+        else:
+            obj = pending.pop()
         oid = obj.id()
-        # IfcOpenShell can expose transient inline entities as #0. They have
-        # no serialized STEP record and must not enter the keep-ID set.
         if oid <= 0:
-            # These entities cannot be selected by a STEP ID; their forward
-            # references, if any, may still point to real serialized entities.
-            pending.extend(forward_refs(obj))
+            if tracing:
+                diagnostics.transient_entity()
+                pending.extend((child, 'forward_transient', obj.is_a()) for child in forward_refs(obj))
+            else:
+                pending.extend(forward_refs(obj))
             continue
         if oid in seen:
             continue
         seen.add(oid)
-        pending.extend(forward_refs(obj))
+        if tracing:
+            diagnostics.visited_entity(obj, inbound, source_class)
+            if notify is not None and len(seen) % 500000 == 0:
+                notify(f'Reachability scanned {len(seen):,} STEP entities; '
+                       f'inverse-discovered {diagnostics.ingress["inverse_relationship"]:,}')
+            cls = obj.is_a()
+            pending.extend((child, 'forward_reference', cls) for child in forward_refs(obj))
+        else:
+            pending.extend(forward_refs(obj))
         if model is not None:
             if obj.is_a('IfcObjectDefinition') or obj.is_a('IfcTypeObject'):
                 allowed_inverse = ('IfcRelationship',)
@@ -104,13 +121,22 @@ def reachable_ids(roots, model=None):
             else:
                 allowed_inverse = ()
             if allowed_inverse:
+                by_class = Counter() if tracing else None
+                count = 0
                 for inverse in model.get_inverse(obj):
                     if any(inverse.is_a(typ) for typ in allowed_inverse):
-                        pending.append(inverse)
+                        if tracing:
+                            pending.append((inverse, 'inverse_relationship', obj.is_a()))
+                            by_class[inverse.is_a()] += 1
+                            count += 1
+                        else:
+                            pending.append(inverse)
+                if tracing:
+                    diagnostics.inverse_traversal(obj, count, by_class)
     return seen
 
 def batch_filter(model, retained_guids: set[str], support_guids: set[str],
-                 notify=print, timings=None):
+                 notify=print, timings=None, diagnostics=None):
     from contextlib import nullcontext
     def timed(label):
         return timings.stage(label) if timings else nullcontext()
@@ -140,7 +166,7 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
         if timings: timings.count('batch_assembly_representations_cleared', cleared)
     with timed('B04 Build live root and reachability index'):
         roots = live_roots(model, desired)
-        reachable = reachable_ids(roots, model)
+        reachable = reachable_ids(roots, model, diagnostics=diagnostics, notify=notify)
         if 0 in reachable:
             raise AssertionError("Non-serialized STEP #0 entered reachability set")
         if timings:
@@ -160,7 +186,7 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
 
 
 def export_batch(model, output_path: Path, expected_ids, opening_ids, source_represented,
-                 notify=print, timings=None, validation='full'):
+                 notify=print, timings=None, validation='full', reachability_diagnostics=True):
     import ifcopenshell
     from extract_export import validate_extraction
     from validation_v14 import full_validate
@@ -171,8 +197,9 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         raise FileExistsError(f'Temporary output already exists: {temp}')
     def timed(label):
         return timings.stage(label) if timings else nullcontext()
+    reach_diag = ReachabilityDiagnostics(enabled=reachability_diagnostics)
     with timed('B00 Filter source graph'):
-        stats = batch_filter(model, expected_ids, opening_ids, notify, timings)
+        stats = batch_filter(model, expected_ids, opening_ids, notify, timings, reach_diag)
     # Important: file.write() creates the STEP serialization without mutating
     # or deleting millions of entity records. The streaming pass copies only
     # records in the live graph, removing unused geometry/resources quickly.
@@ -181,12 +208,18 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
     if raw.exists():
         raise FileExistsError(f'Unpruned temporary output already exists: {raw}')
     reachable = stats.pop('reachable_entity_ids')
+    if reachability_diagnostics:
+        diagnostic_path = out.with_suffix('.reachability.json')
+        reach_diag.save(diagnostic_path)
+        notify(f'Reachability diagnostic: {diagnostic_path}')
+        stats['reachability_diagnostics'] = str(diagnostic_path)
     try:
         with timed('B06 Serialize edited IFC for streaming cleanup'):
             model.write(str(raw))
         with timed('B07 Stream-prune unreachable STEP records'):
             try:
-                pruned = prune_serialized_ifc(raw, temp, reachable, notify)
+                pruned = prune_serialized_ifc(raw, temp, reachable, notify,
+                                              class_report=out.with_suffix('.step_classes.csv'))
             except RuntimeError:
                 # Diagnose the missing ID against the actual edited IFC graph.
                 diag = temp.with_suffix('.step_prune_diagnostics.json')
@@ -215,6 +248,7 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
                 timings.count('batch_unpruned_bytes', pruned['input_bytes'])
                 timings.count('batch_pruned_bytes', pruned['output_bytes'])
         raw.unlink(missing_ok=True)
+        stats['step_class_report'] = str(out.with_suffix('.step_classes.csv'))
         with timed('B08 Reopen batch output'):
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
