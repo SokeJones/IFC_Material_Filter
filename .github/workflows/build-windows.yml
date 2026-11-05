@@ -8,6 +8,7 @@ on:
       - 'extract_export.py'
       - 'performance.py'
       - 'batch_export.py'
+      - 'reachability_diagnostics.py'
       - 'step_prune.py'
       - 'validation_v14.py'
       - 'cli.py'
