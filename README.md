@@ -58,3 +58,16 @@ Replace **all** repository source files with v1.2 and preserve the GitHub workfl
 ## Scope
 
 Only physical `IfcElement` occurrences are material-selected. IFC annotations, standalone quantities and nonphysical objects are not intentionally selected; required model structure can remain. New extraction retains original geometry definitions and supporting references where available, without remeshing.
+
+## Version 1.3: instrumented selection performance
+
+- **Same extraction mechanism and material selection semantics as v1.2.** No change to the geometry copying recipe.
+- Caches matched material sets by material root entity ID, rather than by individual element; materials and material layer sets are commonly shared by thousands of occurrences.
+- Reuses geometry-presence information collected during selection instead of rescanning the entire input after extraction.
+- Each stage reports wall-clock seconds in the application's log and writes a `*.timing.csv` beside the IFC, showing opening, element indexing, hierarchy indexing, selection, audit, extraction, writing, reopening, and validation.
+- A 50% speedup is **not guaranteed**. In particular, if `07 IfcPatch ExtractElements` dominates, the caching optimizations will have limited overall effect. Use two validated baseline models to compare timings and output GlobalIDs.
+
+### Verification
+
+Keep your v1.2 EXE and filtered outputs. Rebuild the v1.3 EXE using GitHub Actions. Filter the same input IFC and materials into a new destination, compare counts in the audit CSV, inspect both outputs in BIMcollab Zoom, and compare `*.timing.csv` with total stopwatch time. Do not overwrite production output until the models are checked.
+

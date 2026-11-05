@@ -6,6 +6,7 @@ known GlobalIDs; IfcPatch's ExtractElements constructs the new document.
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import nullcontext
 
 
 def selection_query(globalids: set[str]) -> str:
@@ -79,7 +80,8 @@ def validate_extraction(output, original_schema: str, expected_ids: set[str],
 
 
 def export_and_validate(model, input_path: str, output_path: Path,
-                        expected_ids: set[str], opening_ids: set[str], notify=print):
+                        expected_ids: set[str], opening_ids: set[str], notify=print,
+                        timings=None, source_represented: set[str] | None = None):
     import ifcopenshell
     import ifcpatch
     dest = Path(output_path)
@@ -90,26 +92,35 @@ def export_and_validate(model, input_path: str, output_path: Path,
     # Include openings to preserve voids even if they have no matching material.
     # This avoids relying on recipe-specific implicit opening behaviour.
     extract_ids = expected_ids | opening_ids
-    output = extract_selected(model, input_path, extract_ids, notify)
-    strip_unselected_assembly_geometry(output, extract_ids, notify)
+    def stage(label):
+        return timings.stage(label) if timings is not None else nullcontext()
+    with stage('07 IfcPatch ExtractElements'):
+        output = extract_selected(model, input_path, extract_ids, notify)
+    with stage('08 Suppress unselected assembly geometry'):
+        strip_unselected_assembly_geometry(output, extract_ids, notify)
     notify('Writing new IFC model (not deleting elements from the original)...')
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        ifcpatch.write(output, str(temp))
+        with stage('09 Write extracted IFC'):
+            ifcpatch.write(output, str(temp))
         notify('Reopening and validating extracted IFC...')
-        check = ifcopenshell.open(str(temp))
+        with stage('10 Reopen extracted IFC'):
+            check = ifcopenshell.open(str(temp))
         if check is None:
             raise RuntimeError('Could not reopen exported IFC')
-        report = validate_extraction(check, original_schema, extract_ids, opening_ids)
-        # Require selected geometric elements to keep their representation reference.
-        source_represented = {
-            e.GlobalId for e in model.by_type('IfcElement')
-            if e.GlobalId in extract_ids and e.Representation is not None
-        }
-        lost = source_represented & set(report['selected_without_representation'])
-        if lost:
-            raise RuntimeError(f'{len(lost)} selected elements lost their geometry. Example: {sorted(lost)[0]}')
-        temp.replace(dest)
+        with stage('11 Validate IDs, schema and geometry references'):
+            report = validate_extraction(check, original_schema, extract_ids, opening_ids)
+            # Legacy-compatible fallback for direct callers without precomputed ids.
+            if source_represented is None:
+                source_represented = {
+                    e.GlobalId for e in model.by_type('IfcElement')
+                    if e.GlobalId in extract_ids and e.Representation is not None
+                }
+            lost = source_represented & set(report['selected_without_representation'])
+            if lost:
+                raise RuntimeError(f'{len(lost)} selected elements lost their geometry. Example: {sorted(lost)[0]}')
+        with stage('12 Finalize output'):
+            temp.replace(dest)
         return report
     except Exception:
         notify(f'Export was not finalised; partial file (if any) at {temp}')

@@ -9,6 +9,7 @@ import csv
 from collections import Counter, deque
 from pathlib import Path
 from typing import Callable
+from performance import PerformanceLog
 
 
 def parse_materials(value: str | list[str]) -> list[str]:
@@ -81,13 +82,16 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         raise ValueError('Input, output, and audit must be different paths.')
     if dst.exists() and not dry_run:
         raise FileExistsError(f'The output already exists: {dst}')
+    perf = PerformanceLog(notify)
     notify(f'Loading model: {src.name}')
-    model = ifcopenshell.open(str(src))
+    with perf.stage('01 Open source IFC'):
+        model = ifcopenshell.open(str(src))
     if model is None:
         raise ValueError('IfcOpenShell could not read this IFC file')
     notify(f'IFC schema: {model.schema}')
-    elements = list(model.by_type('IfcElement'))
-    elem_by_id = {e.id(): e for e in elements}
+    with perf.stage('02 Index physical elements'):
+        elements = list(model.by_type('IfcElement'))
+        elem_by_id = {e.id(): e for e in elements}
     notify(f'Physical elements to evaluate: {len(elements):,}')
 
     # Retrieve effective material: occurrence-level association takes precedence over type.
@@ -105,26 +109,32 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
             material_cache[eid] = (root, source)
         return material_cache[eid]
 
-    matched_cache = {}
+    # Multiple occurrences often share a single material layer set or type material.
+    # Cache by the material root entity rather than the occurrence to avoid
+    # repeatedly traversing the same material subgraph thousands of times.
+    material_root_matches = {}
     def matches(e):
-        eid = e.id()
-        if eid not in matched_cache:
-            root, source = material_state(e)
-            matched_cache[eid] = find_matching_materials([root], wanted) if root is not None else set()
-        return matched_cache[eid]
+        root, _ = material_state(e)
+        if root is None:
+            return set()
+        rid = root.id()
+        if rid not in material_root_matches:
+            material_root_matches[rid] = find_matching_materials([root], wanted)
+        return material_root_matches[rid]
 
     composition_parents = {}
     all_parents = {}
     permitted = {'IfcRelAggregates'} if parent_mode != 'none' else set()
     if parent_mode == 'aggregates+nests':
         permitted.add('IfcRelNests')
-    for relkind in ('IfcRelAggregates', 'IfcRelNests'):
-        for rel in model.by_type(relkind):
-            p = rel.RelatingObject
-            for child in rel.RelatedObjects:
-                all_parents.setdefault(child.id(), []).append((p, relkind))
-                if relkind in permitted:
-                    composition_parents.setdefault(child.id(), []).append((p, relkind))
+    with perf.stage('03 Build parent relationship index'):
+        for relkind in ('IfcRelAggregates', 'IfcRelNests'):
+            for rel in model.by_type(relkind):
+                p = rel.RelatingObject
+                for child in rel.RelatedObjects:
+                    all_parents.setdefault(child.id(), []).append((p, relkind))
+                    if relkind in permitted:
+                        composition_parents.setdefault(child.id(), []).append((p, relkind))
 
     def matching_parent(e):
         queue = deque([(e.id(), 0)])
@@ -145,86 +155,99 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         return None
 
     selected = set()
+    source_represented = set()
     counts = Counter()
     rows = []
-    for i, element in enumerate(elements, 1):
-        root, source = material_state(element)
-        own_match = matches(element)
-        parent = None
-        if own_match:
-            reason = source
-            matching_names = own_match
-        elif root is not None:
-            reason, matching_names = 'excluded_other_material', set()
-        else:
-            parent = matching_parent(element) if permitted else None
-            if parent:
-                ancestor, kind, depth, matching_names = parent
-                reason = 'parent_aggregate' if kind == 'IfcRelAggregates' else 'parent_nest'
+    with perf.stage('04 Material selection and audit rows'):
+        for i, element in enumerate(elements, 1):
+            root, source = material_state(element)
+            own_match = matches(element)
+            parent = None
+            if own_match:
+                reason = source
+                matching_names = own_match
+            elif root is not None:
+                reason, matching_names = 'excluded_other_material', set()
             else:
-                reason, matching_names = 'excluded_no_material', set()
-        keep = not reason.startswith('excluded_')
-        if keep:
-            selected.add(element.id())
-        counts[reason] += 1
-        rows.append({
-            'global_id': element.GlobalId,
-            'ifc_class': element.is_a(),
-            'name': element.Name or '',
-            'decision': 'KEEP' if keep else 'REMOVE',
-            'reason': reason,
-            'matched_materials': '; '.join(sorted(matching_names)),
-            'parent_global_id': parent[0].GlobalId if parent and hasattr(parent[0], 'GlobalId') else '',
-            'parent_distance': parent[2] if parent else '',
-        })
-        if i % 20000 == 0:
-            notify(f'Checked {i:,} / {len(elements):,} elements')
+                parent = matching_parent(element) if permitted else None
+                if parent:
+                    ancestor, kind, depth, matching_names = parent
+                    reason = 'parent_aggregate' if kind == 'IfcRelAggregates' else 'parent_nest'
+                else:
+                    reason, matching_names = 'excluded_no_material', set()
+            keep = not reason.startswith('excluded_')
+            if keep:
+                selected.add(element.id())
+                if element.Representation is not None:
+                    source_represented.add(element.GlobalId)
+            counts[reason] += 1
+            rows.append({
+                'global_id': element.GlobalId,
+                'ifc_class': element.is_a(),
+                'name': element.Name or '',
+                'decision': 'KEEP' if keep else 'REMOVE',
+                'reason': reason,
+                'matched_materials': '; '.join(sorted(matching_names)),
+                'parent_global_id': parent[0].GlobalId if parent and hasattr(parent[0], 'GlobalId') else '',
+                'parent_distance': parent[2] if parent else '',
+            })
+            if i % 20000 == 0:
+                notify(f'Checked {i:,} / {len(elements):,} elements')
     notify('Selected: {:,} / {:,}'.format(len(selected), len(elements)))
     for key, count in sorted(counts.items()):
         notify(f'  {key}: {count:,}')
 
     # Parent shells preserve composition and placement for included descendants.
     # Structural supporting openings are also preserved to avoid filling holes.
-    shells = set()
-    for sid in list(selected):
-        queue = deque([sid])
-        seen = {sid}
-        while queue:
-            eid = queue.popleft()
-            for ancestor, _ in all_parents.get(eid, ()):
-                aid = ancestor.id()
-                if aid in seen:
-                    continue
-                seen.add(aid)
-                if aid in elem_by_id and aid not in selected:
-                    shells.add(aid)
-                queue.append(aid)
-    opening_ids = set()
-    for rel in model.by_type('IfcRelVoidsElement'):
-        if rel.RelatingBuildingElement.id() in selected or rel.RelatingBuildingElement.id() in shells:
-            opening_ids.add(rel.RelatedOpeningElement.id())
-    # Retain openings but never count them as selected physical-material elements.
-    keep_ids = selected | shells | opening_ids
+    with perf.stage('05 Supporting assemblies and openings'):
+        shells = set()
+        for sid in list(selected):
+            queue = deque([sid])
+            seen = {sid}
+            while queue:
+                eid = queue.popleft()
+                for ancestor, _ in all_parents.get(eid, ()):
+                    aid = ancestor.id()
+                    if aid in seen:
+                        continue
+                    seen.add(aid)
+                    if aid in elem_by_id and aid not in selected:
+                        shells.add(aid)
+                    queue.append(aid)
+        opening_ids = set()
+        for rel in model.by_type('IfcRelVoidsElement'):
+            if rel.RelatingBuildingElement.id() in selected or rel.RelatingBuildingElement.id() in shells:
+                opening_ids.add(rel.RelatedOpeningElement.id())
+        # Retain openings but never count them as selected physical-material elements.
+        keep_ids = selected | shells | opening_ids
 
-    audit.parent.mkdir(parents=True, exist_ok=True)
-    with audit.open('w', newline='', encoding='utf-8-sig') as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
-            'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
-        writer.writeheader()
-        writer.writerows(rows)
+    with perf.stage('06 Write audit CSV'):
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        with audit.open('w', newline='', encoding='utf-8-sig') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
+                'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
+            writer.writeheader()
+            writer.writerows(rows)
     notify(f'Audit CSV: {audit}')
+    timing_path = dst.with_suffix('.timing.csv')
     if dry_run:
+        perf.save(timing_path)
         notify('Dry run finished; no IFC was written.')
-        return {'selected': len(selected), 'total': len(elements), 'counts': dict(counts), 'audit': str(audit)}
+        return {'selected': len(selected), 'total': len(elements), 'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path)}
 
     # IfcPatch constructs a fresh IFC model from requested GlobalIDs. This avoids
     # the orphaned geometry and property assets left behind in v1.1's deletion approach.
     expected_ids = {r['global_id'] for r in rows if r['decision'] == 'KEEP'}
-    support_openings = {e.GlobalId for e in elements if e.id() in opening_ids}
-    validation = export_and_validate(model, str(src), dst, expected_ids, support_openings, notify)
+    support_openings = {elem_by_id[i].GlobalId for i in opening_ids if i in elem_by_id}
+    source_represented.update(elem_by_id[i].GlobalId for i in opening_ids if i in elem_by_id and elem_by_id[i].Representation is not None)
+    try:
+        validation = export_and_validate(model, str(src), dst, expected_ids, support_openings, notify,
+                                         timings=perf, source_represented=source_represented)
+    finally:
+        perf.save(timing_path)
     notify(f'Success. Extracted IFC: {dst} ({dst.stat().st_size / (1024**2):.2f} MiB)')
     notify(f'Validated selected elements: {validation["selected_count"]:,}')
     notify(f'Extra assembly shells/openings: {validation["nonselected_shells_or_openings"]:,}')
     notify('NOTE: Geometry references checked; full visual and geometry equivalence still requires viewer verification.')
     return {'selected':len(selected), 'total':len(elements), 'counts':dict(counts),
-            'output':str(dst), 'audit':str(audit), 'validation':validation}
+            'output':str(dst), 'audit':str(audit), 'timing':str(timing_path), 'validation':validation}

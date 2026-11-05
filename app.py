@@ -12,7 +12,7 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.2')
+        self.title('IFC Material Filter v1.3')
         self.geometry('820x660')
         self.minsize(690, 540)
         self.q = queue.Queue()
