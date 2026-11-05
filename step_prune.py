@@ -34,6 +34,8 @@ def prune_serialized_ifc(source: Path, destination: Path, keep_ids: set[int],
         raise FileExistsError(f'Pruned STEP destination already exists: {destination}')
     if not keep_ids:
         raise ValueError('No STEP entity IDs were selected')
+    if any(not isinstance(eid, int) or eid <= 0 for eid in keep_ids):
+        raise ValueError('Reachability contains non-serialized or invalid STEP IDs (e.g. #0)')
     written = 0
     skipped = 0
     found_keep_ids = set()

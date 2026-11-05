@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4.1 — Two-engine benchmark (experimental)
+# IFC Material Filter v1.4.3 — Two-engine benchmark (experimental)
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -125,3 +125,25 @@ this issue. This is a **diagnostic version**, not a confirmed resolution.
 **Important:** Your v1.4.1 reference export logged 9,941 schema validation
 errors. A model opening in a viewer does not prove those are harmless; the
 source baseline check helps decide how to investigate.
+
+
+## v1.4.3 hotfix: non-serialized STEP ID #0
+
+The real v1.4.2 diagnostic established that the only missing STEP record is ID
+`#0`. No `#0` record exists in a valid STEP serialization; IfcOpenShell may
+expose temporary/inline entities with `id() == 0`. The reachability traversal
+was adding that sentinel to the serialized keep-ID set, producing a guaranteed
+one-record mismatch even when every real STEP record was retained.
+
+Changes:
+- Treat entities with ID <= 0 as non-serialized while traversing any forward
+  references to real STEP objects.
+- Reject invalid keep-ID sets before running the STEP pruning process.
+- Add dedicated tests for transient ID #0 in graph traversal and pruning.
+- Continue fail-closed validation for genuinely missing STEP IDs and duplicate
+  STEP records. No relaxation of export integrity checks.
+
+This fixes the specific reported v1.4.2 error, but the experimental Batch
+Cleanup engine still requires IFC schema/geometry review. Input model has
+10,453 schema errors and the IfcPatch output 9,978; these are not resolved by
+this fix. Test both engines and compare the compact outputs in BIMcollab Zoom.

@@ -82,6 +82,13 @@ def reachable_ids(roots, model=None):
     while pending:
         obj = pending.pop()
         oid = obj.id()
+        # IfcOpenShell can expose transient inline entities as #0. They have
+        # no serialized STEP record and must not enter the keep-ID set.
+        if oid <= 0:
+            # These entities cannot be selected by a STEP ID; their forward
+            # references, if any, may still point to real serialized entities.
+            pending.extend(forward_refs(obj))
+            continue
         if oid in seen:
             continue
         seen.add(oid)
@@ -134,6 +141,8 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
     with timed('B04 Build live root and reachability index'):
         roots = live_roots(model, desired)
         reachable = reachable_ids(roots, model)
+        if 0 in reachable:
+            raise AssertionError("Non-serialized STEP #0 entered reachability set")
         if timings:
             timings.count('batch_live_roots', len(roots))
             timings.count('batch_reachable_step_entities', len(reachable))
