@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4 — Two-engine benchmark (experimental)
+# IFC Material Filter v1.4.1 — Two-engine benchmark (experimental)
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -29,8 +29,8 @@ For a single engine (`ifcpatch` or `batch`) the requested filename is used uncha
 2. Invert the shared material selection and remove rejected products with v1.1's relationship-safe routine; do not recursively delete shared property sets.
 3. Clear representations of retained non-selected assembly shells.
 4. Traverse the remaining project's, spatial objects' and selected elements' forward references, plus inverse IFC relationships attached to live objects and types. **Do not** traverse inverse relationships from shared material nodes.
-5. Mark unreachable STEP entities for deletion and use `model.batch()` / `model.unbatch()` to remove them efficiently as one batch. The batch deletion API is different from `remove_deep2()`; it is used only after a reachability sweep guarantees that no retained root depends on a removed entity.
-6. Save to an incomplete IFC, reopen, check required GUIDs and geometry references, perform schema validation, then publish the final file.
+5. Serialize the edited IFC to a temporary STEP file, then stream only reachable STEP entity records to a second temporary IFC. Unused geometry and other resources are dropped without calling `model.remove()` millions of times.
+6. Reopen the pruned IFC, check required GUIDs and geometry references, perform schema validation, then publish the final file.
 
 The size and speed of this approach are not guaranteed. A graph cleanup may require substantial RAM; **peak process RSS** is monitored in the timing logs. The implementation may encounter unexpected relationships in models not represented by unit tests; it fails explicitly instead of silently emitting an unchecked file.
 
@@ -68,3 +68,33 @@ Use the exact same input IFC and materials as v1.3. First compare `*_ifcpatch.if
 - IfcOpenShell relationship removal: https://docs.ifcopenshell.org/autoapi/ifcopenshell/api/root/index.html
 - IfcPatch ExtractElements: https://docs.ifcopenshell.org/autoapi/ifcpatch/recipes/ExtractElements/index.html
 - IfcOpenShell schema validation: https://docs.ifcopenshell.org/autoapi/ifcopenshell/validate/index.html
+
+## v1.4.1 hotfix: B06 nonresponsive cleanup
+
+In v1.4 the B06 implementation called `model.remove(model.by_id(eid))` for *every*
+unused STEP entity, often millions of times, and only later invoked
+`model.unbatch()`. This could take a very long time without progress and
+ignored `RuntimeError` from failed removals. **Do not use that version of the
+experimental Batch engine on large models.**
+
+v1.4.1 replaces this with a serialized STEP pruning pass:
+
+1. Detach rejected physical elements from remaining IFC relationships as before.
+2. Build the reachable resource set from retained elements/spatial roots.
+3. Write the edited IFC once to an `*.unpruned.incomplete.ifc` temporary file.
+4. Stream over its serialized entity records, retaining only reachable STEP IDs.
+   Report progress approximately every 64 MiB read.
+5. Reopen the compact filtered IFC, validate required IDs, geometry references,
+   and IFC schema; publish only if checks complete.
+
+The pruning method conserves the existing IFC entity identifiers and uses no
+`model.batch()` / `model.unbatch()` or per-resource `model.remove()` loop.
+It creates a temporary full-size serialization on disk, so allow sufficient
+free disk space. It requires normal IfcOpenShell STEP serialization. It is an
+experimental optimization, **not yet validated on your large models**.
+
+A second fix preserves the correct original element count in the summary when
+benchmark mode releases the selection model before running Batch Cleanup.
+
+The reference IfcPatch engine is unchanged. Please benchmark the experimental
+output against the reference, including visual geometry/placement verification.

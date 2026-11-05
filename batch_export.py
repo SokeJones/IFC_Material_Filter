@@ -2,7 +2,8 @@
 
 Uses v1.1 relationship-safe removal to avoid the shared property-set crash.
 Then computes forward reachability from retained project, elements and live
-relationships. Batch-deletes unreachable STEP entities (including geometry).
+relationships. Stream-prunes unreachable STEP entities (including geometry)
+from a temporary serialization. No per-resource model.remove loop.
 Never operate on the same file object as the reference extraction engine.
 This engine requires independent comparison before production use.
 """
@@ -135,29 +136,16 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
         if timings:
             timings.count('batch_live_roots', len(roots))
             timings.count('batch_reachable_step_entities', len(reachable))
-    with timed('B05 Identify unreachable resources'):
-        # Build the deletion schedule first; never mark nodes during traversal.
-        to_delete = [e.id() for e in model if e.id() not in reachable]
-        if timings: timings.count('batch_orphan_step_entities', len(to_delete))
-        notify(f'Unreachable STEP records: {len(to_delete):,}')
-    with timed('B06 Batch remove unreachable resources'):
-        # model.batch/unbatch is distinct from the remove_deep2 text strategy.
-        # The forward reachability graph ensures no RETAINED entity points to
-        # a removed resource. Cleanup is intentionally experimental.
-        if not callable(getattr(model, 'batch', None)) or not callable(getattr(model, 'unbatch', None)):
-            raise RuntimeError('Installed IfcOpenShell does not support file.batch()/unbatch().')
-        model.batch()
-        try:
-            for eid in to_delete:
-                try:
-                    model.remove(model.by_id(eid))
-                except RuntimeError:
-                    pass
-            model.unbatch()
-        except Exception:
-            # The model is discarded by caller; never write a partial IFC.
-            raise
-    return {'removed_products': removed_count, 'orphan_records': len(to_delete),
+    with timed('B05 Count unreachable resources'):
+        # Do NOT create millions of entity wrappers or call remove() for each.
+        # We instead serialize the edited model and stream-prune the remaining
+        # unreachable STEP records. This also avoids model.unbatch() rewriting
+        # millions of records without any progress events.
+        unreach_count = sum(1 for entity in model if entity.id() not in reachable)
+        if timings: timings.count('batch_orphan_step_entities', unreach_count)
+        notify(f'Unreachable STEP records: {unreach_count:,}')
+    return {'removed_products': removed_count, 'orphan_records': unreach_count,
+            'reachable_entity_ids': reachable,
             'remaining_elements': len(model.by_type('IfcElement'))}
 
 
@@ -175,9 +163,25 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         return timings.stage(label) if timings else nullcontext()
     with timed('B00 Filter source graph'):
         stats = batch_filter(model, expected_ids, opening_ids, notify, timings)
+    # Important: file.write() creates the STEP serialization without mutating
+    # or deleting millions of entity records. The streaming pass copies only
+    # records in the live graph, removing unused geometry/resources quickly.
+    from step_prune import prune_serialized_ifc
+    raw = out.with_name(out.stem + '.unpruned.incomplete.ifc')
+    if raw.exists():
+        raise FileExistsError(f'Unpruned temporary output already exists: {raw}')
+    reachable = stats.pop('reachable_entity_ids')
     try:
-        with timed('B07 Serialize edited IFC'):
-            model.write(str(temp))
+        with timed('B06 Serialize edited IFC for streaming cleanup'):
+            model.write(str(raw))
+        with timed('B07 Stream-prune unreachable STEP records'):
+            pruned = prune_serialized_ifc(raw, temp, reachable, notify)
+            if timings:
+                timings.count('batch_records_written', pruned['records_kept'])
+                timings.count('batch_records_pruned', pruned['records_removed'])
+                timings.count('batch_unpruned_bytes', pruned['input_bytes'])
+                timings.count('batch_pruned_bytes', pruned['output_bytes'])
+        raw.unlink(missing_ok=True)
         with timed('B08 Reopen batch output'):
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
@@ -193,5 +197,5 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         report.update(stats)
         return report
     except Exception:
-        notify(f'Batch export failed: temporary artifact may remain at {temp}; final output was not replaced')
+        notify(f'Batch export failed: temporary artifact may remain at {temp} or {raw}; final output was not replaced')
         raise

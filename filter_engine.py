@@ -105,7 +105,8 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         elem_by_id = {e.id(): e for e in elements}
     notify(f'Physical elements to evaluate: {len(elements):,}')
     perf.count('source_file_bytes', src.stat().st_size)
-    perf.count('source_elements', len(elements))
+    source_element_count = len(elements)
+    perf.count('source_elements', source_element_count)
 
     # Retrieve effective material: occurrence-level association takes precedence over type.
     # IfcOpenShell's get_material() handles IFC2X3 and IFC4 type relationships.
@@ -247,7 +248,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
     if dry_run:
         perf.save(timing_path)
         notify('Dry run finished; no IFC was written.')
-        return {'selected': len(selected), 'total': len(elements), 'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path)}
+        return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path)}
 
     # Common selection shared between both engines. Each engine has an isolated
     # output file and timing log. Batch reads a separate IFC instance.
@@ -306,7 +307,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                 target_path.with_suffix('.timing.csv'))
     # Write even on partial failure to keep successful reference output usable.
     comparison = {
-        'application_version': '1.4', 'engine_mode': engine,
+        'application_version': '1.4.1', 'engine_mode': engine,
         'validation_mode': validation, 'input': str(src),
         'materials': wanted_names, 'parent_mode': parent_mode,
         'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
@@ -334,7 +335,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
     if comparison.get('parity', {}).get('equivalent') is False:
         raise RuntimeError(f'Engine output mismatch; do not use experimental result. '
                            f'Inspect {comparison_file}')
-    return {'selected': len(selected), 'total': len(elements), 'counts': dict(counts),
+    return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts),
             'audit': str(audit), 'comparison': str(comparison_file), 'engines': results}
 
 
