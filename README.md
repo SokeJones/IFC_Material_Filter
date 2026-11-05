@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4.4 — Reachability diagnostic benchmark (experimental)
+# IFC Material Filter v1.4.5 — Reachability diagnostic benchmark (experimental)
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -148,7 +148,7 @@ Cleanup engine still requires IFC schema/geometry review. Input model has
 10,453 schema errors and the IfcPatch output 9,978; these are not resolved by
 this fix. Test both engines and compare the compact outputs in BIMcollab Zoom.
 
-## v1.4.4: reachability profiling (diagnostic, non-behaviour-changing)
+## v1.4.5: reachability profiling (diagnostic, non-behaviour-changing)
 
 This version deliberately **does not alter the v1.4.3 keep/remove rules**. It
 instruments the graph traversal to identify why the 365 MB model retains far
@@ -169,3 +169,13 @@ release retains the full v1.4.3 filtering and validation logic; it adds
 performance overhead and should not be interpreted as a speed optimization.
 Compare the class reports from the 40 MB and 365 MB models, then change the
 traversal based on those findings in a separate version.
+
+
+## v1.4.5: selective spaces and presentation-layer cleanup (experimental)
+
+* The Batch engine removes `IfcSpace` objects rather than retaining them as spatial roots.
+* If retained elements are spatially contained within a space, they are attached to its existing ancestor `IfcBuildingStorey`. Their placements are not changed. Exports abort if no valid ancestor storey can be located.
+* Room-boundary relationships for removed spaces are discarded. Space-oriented workflows should continue to use the original IFC.
+* Presentation layers retain assignments only to geometric representations reachable from surviving elements and their types. Empty layers are deleted, and nonmatching items are removed.
+* IfcPatch reference export is unchanged. Full semantic and geometry validation on the user's models remains required.
+* New counters: spaces removed, contained elements reparented, presentation layer assignments clipped.

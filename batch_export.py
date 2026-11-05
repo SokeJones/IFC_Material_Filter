@@ -61,11 +61,113 @@ def forward_refs(entity):
                     yield child
 
 
+
+def _space_ancestor_storey(space):
+    """Find an existing storey in the spatial decomposition chain, never guess one."""
+    pending = [space]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current.id() in seen:
+            continue
+        seen.add(current.id())
+        if current.is_a('IfcBuildingStorey'):
+            return current
+        for rel in getattr(current, 'Decomposes', ()) or ():
+            parent = getattr(rel, 'RelatingObject', None)
+            if parent is not None:
+                pending.append(parent)
+    return None
+
+
+def remove_unselected_spaces(model, notify=print):
+    """Discard material-unselected IfcSpace objects, keeping retained contents located.
+
+    Selected elements spatially contained in a space are reattached to the
+    actual ancestor storey; a missing storey aborts rather than inventing one.
+    Space boundaries/room metadata are intentionally discarded.
+    """
+    spaces = list(model.by_type('IfcSpace'))
+    moved = 0
+    for space in spaces:
+        containing = [r for r in model.get_inverse(space)
+                      if r.is_a('IfcRelContainedInSpatialStructure')
+                      and getattr(r, 'RelatingStructure', None) == space]
+        if containing:
+            storey = _space_ancestor_storey(space)
+            if storey is None:
+                raise RuntimeError(
+                    f'Cannot remove IfcSpace {space.GlobalId}: contains elements '
+                    'but has no ancestor IfcBuildingStorey. Export safely aborted.')
+            for rel in containing:
+                # The contained product placement is unchanged. Only containment moves.
+                rel.RelatingStructure = storey
+                moved += len(rel.RelatedElements)
+        detach_and_remove_product(model, space)
+    if spaces:
+        notify(f'Discarded {len(spaces):,} unselected IfcSpace objects; '
+               f'reparented {moved:,} spatially contained element references')
+    return len(spaces), moved
+
+
+def _geometry_roots_of_retained(model, keep_guids):
+    """Direct product geometry plus type geometry, excluding other products."""
+    roots = []
+    for element in model.by_type('IfcElement'):
+        if element.GlobalId not in keep_guids:
+            continue
+        shape = element.Representation
+        if shape is not None:
+            roots.append(shape)
+        for rel in getattr(element, 'IsTypedBy', ()) or ():
+            typ = getattr(rel, 'RelatingType', None)
+            if typ is not None:
+                roots.extend(getattr(typ, 'RepresentationMaps', ()) or ())
+        # IFC2X3 type association may use IsDefinedBy instead of IsTypedBy.
+        for rel in getattr(element, 'IsDefinedBy', ()) or ():
+            if rel.is_a('IfcRelDefinesByType'):
+                typ = rel.RelatingType
+                roots.extend(getattr(typ, 'RepresentationMaps', ()) or ())
+    return roots
+
+
+def restrict_presentation_layers(model, keep_guids, notify=print):
+    """Prevent shared presentation layers reconnecting removed geometry.
+
+    Only layer assignments to geometric objects in retained element/type
+    representation trees remain. Original geometry objects are not modified.
+    """
+    permitted = reachable_ids(_geometry_roots_of_retained(model, keep_guids))
+    changed = removed_items = kept_items = 0
+    for layer in model.by_type('IfcPresentationLayerAssignment'):
+        items = tuple(layer.AssignedItems or ())
+        selected = tuple(item for item in items if item.id() in permitted)
+        removed_items += len(items) - len(selected)
+        kept_items += len(selected)
+        if len(selected) != len(items):
+            # IFC layer AssignedItems is SET [1:?], so an empty assignment
+            # must not be serialized. Delete empty layers; the STREAM prune
+            # will remove any orphaned style resources.
+            if selected:
+                layer.AssignedItems = selected
+            else:
+                refs = list(model.get_inverse(layer))
+                if refs:
+                    raise RuntimeError(
+                        f'Cannot discard empty presentation layer #{layer.id()}: '
+                        f'it is referenced by {len(refs)} other IFC records')
+                model.remove(layer)
+            changed += 1
+    notify(f'Presentation layer clipping: {changed:,} modified/removed layers, '
+           f'{removed_items:,} discarded assignments, {kept_items:,} retained assignments')
+    return changed, removed_items, kept_items
+
 def live_roots(model, keep_guids):
     """Select primary roots; relationships resolved by inverse-aware traversal."""
     roots = []
     roots.extend(model.by_type('IfcProject'))
-    roots.extend(model.by_type('IfcSpatialStructureElement'))
+    roots.extend(e for e in model.by_type('IfcSpatialStructureElement')
+                 if not e.is_a('IfcSpace'))
     roots.extend(e for e in model.by_type('IfcElement') if e.GlobalId in keep_guids)
     return roots
 
@@ -164,6 +266,18 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
                     obj.Representation = None
                     cleared += 1
         if timings: timings.count('batch_assembly_representations_cleared', cleared)
+    with timed('B03a Remove non-matching spaces / preserve containment'):
+        removed_spaces, moved_contents = remove_unselected_spaces(model, notify)
+        if timings:
+            timings.count('batch_spaces_removed', removed_spaces)
+            timings.count('batch_space_contents_reparented', moved_contents)
+    with timed('B03b Clip presentation layers to surviving geometry'):
+        layers_changed, assignments_dropped, assignments_kept = restrict_presentation_layers(
+            model, desired, notify)
+        if timings:
+            timings.count('batch_layers_clipped', layers_changed)
+            timings.count('batch_layer_assignments_removed', assignments_dropped)
+            timings.count('batch_layer_assignments_kept', assignments_kept)
     with timed('B04 Build live root and reachability index'):
         roots = live_roots(model, desired)
         reachable = reachable_ids(roots, model, diagnostics=diagnostics, notify=notify)
@@ -182,7 +296,10 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
         notify(f'Unreachable STEP records: {unreach_count:,}')
     return {'removed_products': removed_count, 'orphan_records': unreach_count,
             'reachable_entity_ids': reachable,
-            'remaining_elements': len(model.by_type('IfcElement'))}
+            'remaining_elements': len(model.by_type('IfcElement')),
+            'removed_spaces': removed_spaces,
+            'reparented_spatial_contents': moved_contents,
+            'layer_assignments_removed': assignments_dropped}
 
 
 def export_batch(model, output_path: Path, expected_ids, opening_ids, source_represented,
