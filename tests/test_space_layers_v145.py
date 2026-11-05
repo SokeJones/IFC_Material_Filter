@@ -114,10 +114,29 @@ class ReparentedPlacementIntegration(unittest.TestCase):
         storey.ObjectPlacement = placement(None, 100)
         space.ObjectPlacement = placement(storey.ObjectPlacement, 10)
         wall.ObjectPlacement = placement(space.ObjectPlacement, 3)
-        old = ifcopenshell.util.placement.get_placement(wall.ObjectPlacement, should_return_si=True)
+        old = ifcopenshell.util.placement.get_local_placement(wall.ObjectPlacement)
         removed, moved = remove_unselected_spaces(f, lambda _:None)
         self.assertEqual((removed,moved),(1,1))
-        new = ifcopenshell.util.placement.get_placement(wall.ObjectPlacement, should_return_si=True)
+        new = ifcopenshell.util.placement.get_local_placement(wall.ObjectPlacement)
         self.assertTrue(np.allclose(old,new, atol=1e-7))
         self.assertEqual(wall.ObjectPlacement.PlacementRelTo, storey.ObjectPlacement)
         self.assertEqual(len(f.by_type('IfcSpace')),0)
+
+@unittest.skipIf(ifcopenshell is None, 'Requires IfcOpenShell on GitHub Actions Windows runner')
+class PlacementUnitIntegration(unittest.TestCase):
+    def test_project_millimetres_are_converted_to_si_before_repair(self):
+        import numpy as np
+        from placement_repair import _world_placement_si
+        import ifcopenshell.util.placement
+        f = ifcopenshell.file(schema='IFC4')
+        project = f.create_entity('IfcProject', GlobalId=ifcopenshell.guid.new())
+        unit = f.create_entity('IfcSIUnit', UnitType='LENGTHUNIT', Name='METRE', Prefix='MILLI')
+        project.UnitsInContext = f.create_entity('IfcUnitAssignment', Units=[unit])
+        point = f.create_entity('IfcCartesianPoint', Coordinates=(1200.0, 0.0, 0.0))
+        axis = f.create_entity('IfcAxis2Placement3D', Location=point)
+        placement = f.create_entity('IfcLocalPlacement', RelativePlacement=axis)
+        project_matrix = ifcopenshell.util.placement.get_local_placement(placement)
+        si_matrix = _world_placement_si(f, placement)
+        self.assertAlmostEqual(project_matrix[0, 3], 1200.0)
+        self.assertAlmostEqual(si_matrix[0, 3], 1.2)
+        self.assertTrue(np.allclose(project_matrix[:3,:3], si_matrix[:3,:3]))
