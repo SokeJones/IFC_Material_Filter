@@ -12,7 +12,7 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.4.6 — Diagnostic Benchmark')
+        self.title('IFC Material Filter v1.4.7 — Optional Material Verification')
         self.geometry('870x735')
         self.minsize(690, 540)
         self.q = queue.Queue()
@@ -69,6 +69,8 @@ class FilterApp(tk.Tk):
         self.runbutton.pack(side='left')
         self.verifybutton = ttk.Button(buttons, text='Verify geometry...', command=self._start_verify)
         self.verifybutton.pack(side='left', padx=(8, 0))
+        self.materialverifybutton = ttk.Button(buttons, text='Verify materials...', command=self._start_material_verify)
+        self.materialverifybutton.pack(side='left', padx=(8, 0))
         ttk.Button(buttons, text='Clear log', command=lambda: self.log.delete('1.0', 'end')).pack(side='left', padx=8)
         ttk.Label(outer, text='Processing log').pack(anchor='w', pady=(13, 3))
         self.log = tk.Text(outer, height=12, wrap='word', state='normal')
@@ -123,6 +125,34 @@ class FilterApp(tk.Tk):
                                        args=(source, filtered), daemon=True)
         self.worker.start()
 
+    def _start_material_verify(self):
+        if self.worker is not None and self.worker.is_alive():
+            messagebox.showwarning('Processing', 'Finish the current operation first.')
+            return
+        source = self.filevar.get().strip()
+        if not source or not Path(source).is_file():
+            messagebox.showerror('Missing source', 'Select the original IFC in Source IFC.')
+            return
+        filtered = filedialog.askopenfilename(title='Choose filtered IFC to compare materials',
+                                               filetypes=[('IFC models', '*.ifc')])
+        if not filtered:
+            return
+        self.runbutton.configure(state='disabled')
+        self.verifybutton.configure(state='disabled')
+        self.materialverifybutton.configure(state='disabled')
+        self.worker = threading.Thread(target=self._material_verify_work,
+                                       args=(source, filtered), daemon=True)
+        self.worker.start()
+
+    def _material_verify_work(self, source, filtered):
+        try:
+            from material_verification import compare_materials
+            report = compare_materials(source, filtered,
+                                       notify=lambda msg: self.q.put(('log', msg)))
+            self.q.put(('materials_done', report))
+        except Exception:
+            self.q.put(('error', traceback.format_exc()))
+
     def _verify_work(self, source, filtered):
         try:
             from geometry_verification import compare_geometry
@@ -152,15 +182,24 @@ class FilterApp(tk.Tk):
                 elif kind == 'done':
                     self.runbutton.configure(state='normal')
                     self.verifybutton.configure(state='normal')
+                    self.materialverifybutton.configure(state='normal')
                     messagebox.showinfo('Completed', 'Processing finished. See the log and audit CSV for results.')
                 elif kind == 'verify_done':
                     self.runbutton.configure(state='normal')
                     self.verifybutton.configure(state='normal')
+                    self.materialverifybutton.configure(state='normal')
                     messagebox.showinfo('Geometry verification',
                         f"Verified: {data['geometry_verified']}\nDifferences: {data['mismatches']}\nUnverified: {data['geometry_unverified']}\nSee JSON report.")
+                elif kind == 'materials_done':
+                    self.runbutton.configure(state='normal')
+                    self.verifybutton.configure(state='normal')
+                    self.materialverifybutton.configure(state='normal')
+                    messagebox.showinfo('Material verification',
+                        f"Equivalent: {data['material_equivalent']}\nDifferences: {data['material_mismatches']}\nUnverified: {data['material_unverified']}\nSee JSON report.")
                 elif kind == 'error':
                     self.runbutton.configure(state='normal')
                     self.verifybutton.configure(state='normal')
+                    self.materialverifybutton.configure(state='normal')
                     self.log.insert('end', 'ERROR\n' + data + '\n')
                     self.log.see('end')
                     messagebox.showerror('Failed', 'Processing failed. See the log for details.')

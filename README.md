@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4.6 — Reachability diagnostic benchmark (experimental)
+# IFC Material Filter v1.4.7 — Optional material verification
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -212,3 +212,38 @@ itself.
 - Placement repair converts IFC project-unit translations to SI metres before calling `edit_object_placement(..., is_si=True)`; rotations remain unchanged.
 - The geometry comparison and the integration test also use `get_local_placement`.
 - The GitHub test gate stays enabled; the filter/export and serialization algorithms are unchanged.
+
+
+## v1.4.7 — Optional material assignment comparison
+
+This version adds **Verify materials...** as a separate action next to **Verify geometry...**.
+Filtering, selection, pruning, serialization and regular processing stages are unchanged.
+
+1. Choose the **original IFC** with *Source IFC*.
+2. Click **Verify materials...** and select the previously filtered `*_batch.ifc`.
+3. The independent comparison writes `*_batch.material_comparison.json` next to the filtered file.
+4. Inspect `passed`, `material_mismatches`, `material_unverified` and the GlobalID-specific details.
+
+It checks every retained `IfcElement`, comparing IFC class and the **effective material root**
+via IfcOpenShell `get_material(should_inherit=False/True)`. It distinguishes direct
+and type-inherited assignments and compares nested material structures, including
+material layers, thicknesses and constituent/profile details. It compares neither
+material presentation inverses nor the correctness of *discarded* elements.
+Unassigned supporting objects can legitimately have no effective material in both
+models; the report counts those separately. Differences and resolution errors fail
+verification; no attempt is made to modify the IFCs. STEP IDs are ignored.
+
+The original and filtered IFC files are opened **sequentially** to reduce memory
+consumption. Since both are reopened, the operation has additional I/O overhead,
+especially for the 360 MB source. **No extra time is added to normal filtering.**
+The optional full check should be run once for both reference models, when IFC
+schema or authoring conventions change, and after revisions to filter logic.
+
+Command-line alternative for developers:
+
+```powershell
+python material_verification.py original.ifc filtered_batch.ifc
+```
+
+The Windows build is created with the existing `.github/workflows/build-windows.yml`
+GitHub Actions workflow. All integration tests run on the Windows runner.
