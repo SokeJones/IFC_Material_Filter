@@ -39,6 +39,28 @@ class StepPruneTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'expected'):
                 prune_serialized_ifc(p,q,{1,9},notify=lambda _:None)
             self.assertFalse(q.exists())
+    def test_missing_ids_report_exact_identity(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            inp=Path(td)/'in.ifc'; out=Path(td)/'out.ifc'
+            inp.write_bytes(b'DATA;\n#10=IFCFOO($);\n#11=IFCBAR($);\nENDSEC;\n')
+            with self.assertRaisesRegex(RuntimeError, '12'):
+                prune_serialized_ifc(inp,out,{10,12},notify=lambda _:None)
+            diagnostic=json.loads(out.with_suffix('.step_prune_diagnostics.json').read_text())
+            self.assertEqual(diagnostic['missing_ids'],[12])
+            self.assertFalse(out.exists())
+
+    def test_duplicate_ids_fail_closed(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            inp=Path(td)/'in.ifc'; out=Path(td)/'out.ifc'
+            inp.write_bytes(b'DATA;\n#10=IFCFOO($);\n#10=IFCBAR($);\nENDSEC;\n')
+            with self.assertRaisesRegex(RuntimeError, 'duplicates'):
+                prune_serialized_ifc(inp,out,{10},notify=lambda _:None)
+            report=json.loads(out.with_suffix('.step_prune_diagnostics.json').read_text())
+            self.assertEqual(report['duplicate_step_ids'],[10])
+            self.assertFalse(out.exists())
+
     def test_truncated_record_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/'a.ifc';q=Path(td)/'b.ifc'
