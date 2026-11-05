@@ -67,7 +67,7 @@ jobs:
 
       - name: Build standalone executable
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate --hidden-import ifcopenshell.api.geometry.edit_object_placement --hidden-import ifcopenshell.geom app.py 2>&1 | Tee-Object -FilePath build-logs/pyinstaller.txt
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate --hidden-import ifcopenshell.api.geometry.edit_object_placement --hidden-import ifcopenshell.geom --hidden-import material_verification app.py 2>&1 | Tee-Object -FilePath build-logs/pyinstaller.txt
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { throw "PyInstaller failed with exit code $buildExit. See build-logs/pyinstaller.txt." }
           if (-not (Test-Path 'dist/IFC_Material_Filter.exe')) { throw 'Expected executable missing after PyInstaller.' }
