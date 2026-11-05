@@ -1,4 +1,4 @@
-# IFC Material Filter v1.4.5 — Reachability diagnostic benchmark (experimental)
+# IFC Material Filter v1.4.6 — Reachability diagnostic benchmark (experimental)
 
 **Status:** Source/build kit for a portable Windows executable. No prebuilt `.exe` is contained in this ZIP. The existing **v1.3 IfcPatch extraction engine** is retained as the reference and was previously verified on two real models by the user. **Batch Cleanup is experimental and has not yet been verified on the user's benchmark IFC files.** The output is not to be used in engineering deliverables until compared in a viewer.
 
@@ -148,7 +148,7 @@ Cleanup engine still requires IFC schema/geometry review. Input model has
 10,453 schema errors and the IfcPatch output 9,978; these are not resolved by
 this fix. Test both engines and compare the compact outputs in BIMcollab Zoom.
 
-## v1.4.5: reachability profiling (diagnostic, non-behaviour-changing)
+## v1.4.6: reachability profiling (diagnostic, non-behaviour-changing)
 
 This version deliberately **does not alter the v1.4.3 keep/remove rules**. It
 instruments the graph traversal to identify why the 365 MB model retains far
@@ -171,7 +171,7 @@ Compare the class reports from the 40 MB and 365 MB models, then change the
 traversal based on those findings in a separate version.
 
 
-## v1.4.5: selective spaces and presentation-layer cleanup (experimental)
+## v1.4.6: selective spaces and presentation-layer cleanup (experimental)
 
 * The Batch engine removes `IfcSpace` objects rather than retaining them as spatial roots.
 * If retained elements are spatially contained within a space, they are attached to its existing ancestor `IfcBuildingStorey`. Their placements are not changed. Exports abort if no valid ancestor storey can be located.
@@ -179,3 +179,29 @@ traversal based on those findings in a separate version.
 * Presentation layers retain assignments only to geometric representations reachable from surviving elements and their types. Empty layers are deleted, and nonmatching items are removed.
 * IfcPatch reference export is unchanged. Full semantic and geometry validation on the user's models remains required.
 * New counters: spaces removed, contained elements reparented, presentation layer assignments clipped.
+
+
+## v1.4.6 - correctness / placement / geometry
+
+- Batch: when a retained element is reparented out of an unselected IfcSpace,
+  rebuild its placement using the **documented IfcOpenShell**
+  `ifcopenshell.api.geometry.edit_object_placement` operation and its prior
+  global placement matrix. Any observed displacement aborts the export.
+- Full validation writes `*_batch.placement_diagnostics.json`, listing
+  orphaned `IfcLocalPlacement` objects, to investigate source-versus-output
+  findings. This report is diagnostic; it does not silently delete placements.
+- New **Verify geometry...** button: select the original IFC in the main
+  window, click the button, then select an existing filtered IFC. The check
+  triangulates every retained IfcElement from each file using identical
+  IfcOpenShell settings, compares world-space triangles and global placement
+  matrices by GlobalID, and writes `*.geometry_comparison.json`. Unsupported
+  geometries are reported as UNVERIFIED, not PASS. The check may take a long
+  time and use substantial memory, so it is separate from the filter run.
+- The existing STEP serialization/prune architecture remains unchanged.
+- v1.4.6 is **experimental pending full source-model benchmarks**. No claim
+  of repaired errors or geometric equivalence is made until real-world run.
+
+**Caution:** Mesh matching with default 0.0001 project-length-unit tolerance validates the generated
+triangulated surface, not mathematical BREP identity. The comparison verifies
+only retained IFC elements, not correctness of the material-selection decision
+itself.

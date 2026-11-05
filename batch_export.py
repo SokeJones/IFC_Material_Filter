@@ -89,6 +89,7 @@ def remove_unselected_spaces(model, notify=print):
     """
     spaces = list(model.by_type('IfcSpace'))
     moved = 0
+    repaired = 0
     for space in spaces:
         containing = [r for r in model.get_inverse(space)
                       if r.is_a('IfcRelContainedInSpatialStructure')
@@ -99,14 +100,21 @@ def remove_unselected_spaces(model, notify=print):
                 raise RuntimeError(
                     f'Cannot remove IfcSpace {space.GlobalId}: contains elements '
                     'but has no ancestor IfcBuildingStorey. Export safely aborted.')
+            from placement_repair import capture_world_placements, repair_reparented_placements
+            # Capture the actual global placement *before* the space is removed.
+            # Merely changing containment retains possibly invalid PlacementRelTo
+            # references to the discarded space's IfcLocalPlacement.
+            affected = {e.id(): e for rel in containing for e in rel.RelatedElements}
+            snapshots = capture_world_placements(affected.values())
             for rel in containing:
-                # The contained product placement is unchanged. Only containment moves.
                 rel.RelatingStructure = storey
                 moved += len(rel.RelatedElements)
+            repaired += repair_reparented_placements(model, snapshots)
         detach_and_remove_product(model, space)
     if spaces:
         notify(f'Discarded {len(spaces):,} unselected IfcSpace objects; '
-               f'reparented {moved:,} spatially contained element references')
+               f'reparented {moved:,} spatially contained element references; '
+               f'rebuilt {repaired:,} placement(s)')
     return len(spaces), moved
 
 
@@ -376,6 +384,15 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         if validation == 'full':
             with timed('B10 IFC schema validation'):
                 report.update(full_validate(reopened, notify))
+            # Record exact problematic placements and references. We do not
+            # claim source/output error parity solely from error counts.
+            from validation_v146 import orphan_placement_diagnostics
+            details = orphan_placement_diagnostics(reopened)
+            details_path = out.with_suffix('.placement_diagnostics.json')
+            details_path.write_text(json.dumps(details, indent=2), encoding='utf-8')
+            report['placement_diagnostics'] = str(details_path)
+            report['orphan_local_placements'] = len(details['orphan_placements'])
+            notify(f'Orphan placement diagnostics: {len(details["orphan_placements"]):,} findings, {details_path}')
         with timed('B11 Finalize batch output'):
             temp.replace(out)
         report.update(stats)

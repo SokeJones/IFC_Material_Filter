@@ -312,7 +312,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                 target_path.with_suffix('.timing.csv'))
     # Write even on partial failure to keep successful reference output usable.
     comparison = {
-        'application_version': '1.4.5', 'engine_mode': engine,
+        'application_version': '1.4.6', 'engine_mode': engine,
         'validation_mode': validation, 'input': str(src),
         'materials': wanted_names, 'parent_mode': parent_mode,
         'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
