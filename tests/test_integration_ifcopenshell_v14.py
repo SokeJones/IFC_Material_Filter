@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from batch_export import batch_filter
+from step_prune import prune_serialized_ifc
 
 try:
     import ifcopenshell
@@ -33,7 +34,9 @@ class IfcBatchIntegrationTests(unittest.TestCase):
         self.assertEqual(f.by_type('IfcRelDefinesByProperties')[0].RelatedObjects,(keep,))
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)/'subset.ifc'
-            f.write(str(out))
+            raw = Path(td)/'raw.ifc'
+            f.write(str(raw))
+            prune_serialized_ifc(raw, out, stats['reachable_entity_ids'], notify=lambda _: None)
             check = ifcopenshell.open(str(out))
             self.assertEqual([e.GlobalId for e in check.by_type('IfcElement')],[keep.GlobalId])
             self.assertEqual(len(check.by_type('IfcPropertySet')),1)
