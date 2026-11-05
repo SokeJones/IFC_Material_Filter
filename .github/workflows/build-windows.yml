@@ -1,45 +1,99 @@
 name: Build Windows portable EXE
+
 on:
   workflow_dispatch:
   push:
     paths:
-      - 'app.py'
-      - 'filter_engine.py'
-      - 'extract_export.py'
-      - 'performance.py'
-      - 'batch_export.py'
-      - 'reachability_diagnostics.py'
-      - 'step_prune.py'
-      - 'validation_v14.py'
-      - 'validation_v146.py'
-      - 'placement_repair.py'
-      - 'geometry_verification.py'
-      - 'cli.py'
+      - '**.py'
       - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/build-windows.yml'
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 35
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: 'x64'
+
+      - name: Prepare log folder
+        run: New-Item -ItemType Directory -Force -Path build-logs | Out-Null
+
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Run regression tests
-        run: python -m unittest discover -s tests -v
-      - name: Build standalone program
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate --hidden-import ifcopenshell.api.geometry.edit_object_placement --hidden-import ifcopenshell.geom app.py
+        run: |
+          python -m pip --version
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=ifcopenshell -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed. Check the Install dependencies step.' }
+          python -m pip freeze | Out-File -FilePath build-logs/dependencies.txt -Encoding utf8
+
+      - name: Verify required imports
+        run: |
+          @'
+          import sys
+          import ifcopenshell
+          import ifcopenshell.geom
+          import ifcopenshell.api.geometry
+          import ifcopenshell.util.placement
+          import ifcpatch
+          import ifcpatch.recipes.ExtractElements
+          import PyInstaller
+          import psutil
+          print('Python:',sys.version)
+          print('IfcOpenShell:',getattr(ifcopenshell,'version','unknown'))
+          print('PyInstaller:',PyInstaller.__version__)
+          print('Required runtime imports succeeded.')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Required import failed.' }
+
+      - name: Run regression and integration tests
+        run: |
+          python -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath build-logs/tests.txt
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) { throw "Unit/integration tests failed with exit code $testExit. See test output above or build-logs/tests.txt." }
+
+      - name: Build standalone executable
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name IFC_Material_Filter --collect-all ifcopenshell --collect-all ifcpatch --hidden-import ifcpatch.recipes.ExtractElements --collect-all psutil --hidden-import ifcopenshell.validate --hidden-import ifcopenshell.api.geometry.edit_object_placement --hidden-import ifcopenshell.geom app.py 2>&1 | Tee-Object -FilePath build-logs/pyinstaller.txt
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { throw "PyInstaller failed with exit code $buildExit. See build-logs/pyinstaller.txt." }
+          if (-not (Test-Path 'dist/IFC_Material_Filter.exe')) { throw 'Expected executable missing after PyInstaller.' }
+
       - name: Package portable EXE
-        shell: pwsh
-        run: Compress-Archive -Path dist/IFC_Material_Filter.exe -DestinationPath IFC_Material_Filter_Windows.zip
-      - uses: actions/upload-artifact@v4
+        run: |
+          Compress-Archive -Path dist/IFC_Material_Filter.exe -DestinationPath IFC_Material_Filter_Windows.zip -Force
+          if (-not (Test-Path IFC_Material_Filter_Windows.zip)) { throw 'ZIP archive was not created.' }
+          Get-Item dist/IFC_Material_Filter.exe, IFC_Material_Filter_Windows.zip | Select-Object Name,Length
+
+      - name: Upload build diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: IFC_Material_Filter_Build_Logs
+          path: |
+            build-logs/
+            build/IFC_Material_Filter/warn-IFC_Material_Filter.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload portable EXE
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
           name: IFC_Material_Filter_Windows
           path: IFC_Material_Filter_Windows.zip
+          if-no-files-found: error
           retention-days: 30
