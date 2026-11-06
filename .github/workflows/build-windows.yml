@@ -1,13 +1,8 @@
 name: Build Windows portable EXE
 
+# Manual build only: launch from GitHub > Actions > Run workflow.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '**.py'
-      - 'tests/**'
-      - 'requirements.txt'
-      - '.github/workflows/build-windows.yml'
 
 jobs:
   build:
@@ -74,10 +69,30 @@ jobs:
 
       - name: Smoke test frozen Windows EXE (headless real IFC export)
         run: |
-          & .\dist\IFC_Material_Filter.exe --selftest
-          $smokeExit = $LASTEXITCODE
-          if ($smokeExit -ne 0) { throw "Frozen executable smoke test failed with exit code $smokeExit." }
-          Write-Host 'Frozen executable completed headless IFC filtering successfully.'
+          # A --windowed EXE is a GUI-subsystem process. PowerShell's
+          # $LASTEXITCODE can be unset even when invocation has completed.
+          # Python subprocess.wait() explicitly waits for the frozen process.
+          @'
+          import pathlib, subprocess, sys
+          exe = pathlib.Path('dist/IFC_Material_Filter.exe').resolve()
+          report = pathlib.Path('build-logs/frozen-selftest.txt').resolve()
+          try:
+              result = subprocess.run([str(exe), '--selftest', '--selftest-report', str(report)],
+                                      timeout=180, check=False)
+          except subprocess.TimeoutExpired as exc:
+              raise SystemExit(f'Frozen selftest timed out: {exc}')
+          if report.is_file():
+              detail = report.read_text(encoding='utf-8')
+              print(detail)
+          else:
+              detail = 'No frozen-selftest.txt was created; check executable startup.'
+              report.write_text(detail + '\n', encoding='utf-8')
+              print(detail)
+          if result.returncode != 0 or not detail.startswith('PASS\n'):
+              raise SystemExit(f'Frozen selftest FAILED (process exit {result.returncode}).')
+          print('Frozen executable completed headless IFC filtering successfully.')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen executable smoke test failed. Check build-logs/frozen-selftest.txt.' }
 
       - name: Package portable EXE
         run: |
