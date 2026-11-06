@@ -1,11 +1,16 @@
-"""EXPERIMENTAL: IFC subset by editing source graph and reclaiming orphan subgraphs.
+"""Batch Cleanup: default IFC material-filter export engine.
 
-Uses v1.1 relationship-safe removal to avoid the shared property-set crash.
-Then computes forward reachability from retained project, elements and live
-relationships. Stream-prunes unreachable STEP entities (including geometry)
-from a temporary serialization. No per-resource model.remove loop.
-Never operate on the same file object as the reference extraction engine.
-This engine requires independent comparison before production use.
+Uses relationship-aware removal, selective spatial/layer cleanup, and
+forward/inverse reachability to stream-prune unreachable STEP entities from a
+temporary serialization. Does not remove millions of resources one by one.
+Never operate on the same file object as the IfcPatch reference engine.
+
+Validated on the project's 40 MB and 360 MB reference IFC models with
+structural parity, world-space tessellation, effective-material comparison,
+and schema-error count regression checks. These results do not guarantee
+correctness for every IFC schema, exporter, or unexpected relationship graph.
+Standard (basic) validation remains the default; Full and independent
+geometry/material comparisons are optional under Advanced Options.
 """
 from __future__ import annotations
 from collections import deque, Counter
@@ -318,8 +323,13 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
     from contextlib import nullcontext
     out = Path(output_path)
     temp = out.with_name(out.stem + '.incomplete.ifc')
-    if temp.exists():
-        raise FileExistsError(f'Temporary output already exists: {temp}')
+    raw = out.with_name(out.stem + '.unpruned.incomplete.ifc')
+    # Both names must be checked before the expensive graph cleanup begins.
+    stale = [path for path in (temp, raw) if path.exists()]
+    if stale:
+        raise FileExistsError('Temporary IFC file already exists: '
+                              + str(stale[0])
+                              + '. Move or remove the stale file before retrying.')
     def timed(label):
         return timings.stage(label) if timings else nullcontext()
     reachability_diagnostics = bool(reachability_diagnostics and save_reports)
@@ -330,9 +340,6 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
     # or deleting millions of entity records. The streaming pass copies only
     # records in the live graph, removing unused geometry/resources quickly.
     from step_prune import prune_serialized_ifc
-    raw = out.with_name(out.stem + '.unpruned.incomplete.ifc')
-    if raw.exists():
-        raise FileExistsError(f'Unpruned temporary output already exists: {raw}')
     reachable = stats.pop('reachable_entity_ids')
     if reachability_diagnostics:
         diagnostic_path = out.with_suffix('.reachability.json')
@@ -401,5 +408,13 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         report.update(stats)
         return report
     except Exception:
-        notify(f'Batch export failed: temporary artifact may remain at {temp} or {raw}; final output was not replaced')
+        # Only clean files created by this invocation: both paths were absent
+        # during preflight. Do not leave .incomplete files blocking a retry.
+        for partial in (temp, raw):
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                notify(f'WARNING: Could not remove {partial}: {cleanup_error}')
+        notify('Batch export failed; temporary IFC files cleaned where possible. '
+               'The final output was not replaced.')
         raise

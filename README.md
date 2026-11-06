@@ -1,6 +1,6 @@
 # IFC Material Filter v1.5 — Simplified Windows interface
 
-**Status:** GitHub Actions source/build kit for a portable Windows executable. No compiled EXE is included. Filtering and verification algorithms are unchanged from v1.4.7. The Batch Cleanup engine has passed structural, tessellated-geometry and effective-material comparisons on both the 40 MB and 360 MB project benchmark models; this does not guarantee correctness on arbitrary IFC files.
+**Status:** GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
 ## Everyday workflow
 
@@ -17,7 +17,7 @@ See [`V1_5_UI.md`](V1_5_UI.md) for the UI guide and limitations.
 
 ## Engines and outputs
 
-In the default `batch` engine mode the requested output filename is used directly, along with audit/diagnostic reports. The optional `ifcpatch` mode creates a reference output; `both` produces `_batch.ifc` and `_ifcpatch.ifc` for benchmarking, plus a `*.comparison.json` report. Stage timing CSVs and diagnostic reports are written next to the output as before.
+The default **Batch Cleanup** (`batch`) engine writes the requested filtered IFC filename. In the GUI, **Save audit CSV** and **Save detailed reports** are both OFF by default, so ordinary filtering saves only the IFC (unless a failure requires emergency diagnostics). Enable the respective Advanced Options checkboxes to save reports. Optional **IfcPatch** is a reference engine; **Both** creates `_batch.ifc` and `_ifcpatch.ifc` for comparison. Audit-only mode saves a CSV rather than an IFC.
 
 ## Material semantics
 
@@ -27,25 +27,24 @@ In the default `batch` engine mode the requested output filename is used directl
 - Optional `aggregates+nests` follows nesting parents as well.
 - Openings and unrepresented assembly shells are retained where needed.
 
-## Batch Cleanup algorithm (experimental)
+## Batch Cleanup algorithm (default engine)
 
 1. Reopen a **separate** IFC instance for the batch engine; do not modify the reference model.
 2. Invert the shared material selection and remove rejected products with v1.1's relationship-safe routine; do not recursively delete shared property sets.
 3. Clear representations of retained non-selected assembly shells.
 4. Traverse the remaining project's, spatial objects' and selected elements' forward references, plus inverse IFC relationships attached to live objects and types. **Do not** traverse inverse relationships from shared material nodes.
 5. Serialize the edited IFC to a temporary STEP file, then stream only reachable STEP entity records to a second temporary IFC. Unused geometry and other resources are dropped without calling `model.remove()` millions of times.
-6. Reopen the pruned IFC, check required GUIDs and geometry references, perform schema validation, then publish the final file.
+6. Reopen the pruned IFC and check required GlobalIDs and representation references before publishing. Full schema validation is performed only when **Full** is selected.
 
-The size and speed of this approach are not guaranteed. A graph cleanup may require substantial RAM; **peak process RSS** is monitored in the timing logs. The implementation may encounter unexpected relationships in models not represented by unit tests; it fails explicitly instead of silently emitting an unchecked file.
+The 40 MB and 360 MB reference-model benchmarks support using Batch Cleanup as the project default. Size and speed are model-dependent, and cleanup can require substantial RAM. Models from unfamiliar exporters or schemas may contain untested relationships: use **Full validation** and, when warranted, the independent **Verify geometry** / **Verify materials** actions.
 
-## Full validation (default)
+## Validation levels
 
-- Reopen the output and verify IFC schema and retained GlobalIDs.
-- Reject unexpected represented physical elements (except supporting openings).
-- Detect previously represented selected elements that lose representation references.
-- Run `ifcopenshell.validate.validate()` on the resulting IFC with **basic schema attribute/cardinality checks**; errors/warnings are recorded. EXPRESS WHERE rule checking is not performed, and pre-existing schema warnings may remain.
-- Compare both outputs' selected GlobalIDs, classes and representation presence. The comparison is **structural**, not a proof of shape or world-placement equality. Confirm these using BIMcollab Zoom before using the batch result.
-- Warn if experimental output is over 1.5 times the reference export size.
+**Standard (`basic`) — GUI default:** reopens the output and checks required GlobalIDs, IFC schema identity, retained elements and geometry-representation presence. It does **not** run full `ifcopenshell.validate.validate()` schema attribute/cardinality checks or orphan-placement diagnostics. Standard is a fast structural validation, **not** a statement that the entire IFC is schema-valid.
+
+**Full — optional (Advanced Options):** additionally runs IfcOpenShell schema attribute/cardinality validation and orphan-placement diagnostics, retaining findings if report saving is enabled. EXPRESS WHERE rules are not checked; pre-existing source errors may remain.
+
+**Both engines — optional benchmark mode:** compares selected GlobalIDs/classes and representation presence between Batch Cleanup and IfcPatch; this parity check is structural, not a proof of exact shape or world placement. Independent **Verify geometry** and **Verify materials** actions are available in Advanced Options. These are not run during routine filtering.
 
 ## Build EXE on Windows via GitHub Actions
 
@@ -62,9 +61,11 @@ The size and speed of this approach are not guaranteed. A graph cleanup may requ
 python cli.py original.ifc filtered.ifc --material "Stahlbeton Schweiz" --material "Beton C30/37" --engine both --validation full
 ```
 
-## Benchmark protocol
+## Benchmark and release status
 
-Use the exact same input IFC and materials as v1.3. First compare `*_ifcpatch.ifc` visually with `*_batch.ifc` in BIMcollab Zoom and check the `comparison.json`, especially schema findings and representation differences. Record total times and output sizes for both benchmark models. Keep v1.3 as your production fallback until batch output is verified and substantially faster.
+The project previously compared Batch Cleanup and IfcPatch on approximately 40 MB and 360 MB IFC inputs. Batch Cleanup passed structural checks, world-space tessellated-geometry verification (3,214 and 3,218 represented elements respectively, zero reported mismatches), and material verification (3,333 and 3,337 retained elements respectively, zero reported mismatches). The 360 MB filtered file had the same number of reported schema errors as its source (4); the 40 MB output had 7,007 versus 10,453 in the source, primarily from pre-existing relationship issues. **These checks justify Batch Cleanup as the project default, not universal certification.**
+
+IfcPatch remains an **optional comparison/reference engine**, not the everyday production fallback. For unfamiliar IFC exporters or high-consequence deliverables, select Full validation and optionally run the independent geometry/material comparisons. Historical experimental notes below describe earlier versions and do not override the current defaults.
 
 ## References
 
@@ -103,7 +104,11 @@ benchmark mode releases the selection model before running Batch Cleanup.
 The reference IfcPatch engine is unchanged. Please benchmark the experimental
 output against the reference, including visual geometry/placement verification.
 
-## v1.4.2 diagnostic update
+## Historical development notes (v1.4.x)
+
+The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.3 default.
+
+### v1.4.2 diagnostic update
 
 The previous 1.4.1 benchmark showed 127,372 reachable STEP IDs but only
 127,371 serialized records, so the experimental engine refused to publish.
@@ -175,7 +180,7 @@ Compare the class reports from the 40 MB and 365 MB models, then change the
 traversal based on those findings in a separate version.
 
 
-## v1.4.6: selective spaces and presentation-layer cleanup (experimental)
+## v1.4.6: selective spaces and presentation-layer cleanup (historical release note)
 
 * The Batch engine removes `IfcSpace` objects rather than retaining them as spatial roots.
 * If retained elements are spatially contained within a space, they are attached to its existing ancestor `IfcBuildingStorey`. Their placements are not changed. Exports abort if no valid ancestor storey can be located.
@@ -185,7 +190,7 @@ traversal based on those findings in a separate version.
 * New counters: spaces removed, contained elements reparented, presentation layer assignments clipped.
 
 
-## v1.4.6 - correctness / placement / geometry
+## v1.4.6 - correctness / placement / geometry (historical release note)
 
 - Batch: when a retained element is reparented out of an unselected IfcSpace,
   rebuild its placement using the **documented IfcOpenShell**
@@ -268,3 +273,14 @@ CLI behavior remains backward compatible; `--no-audit --no-reports` disables rou
 - During processing, the input filename field and Browse action cannot change the active source.
 - The processing log remains available for the entire session.
 - No changes to filter selection, output defaults, or report generation.
+
+
+## v1.5.2 C2 documentation clarification
+
+- **Batch Cleanup remains the default export engine** and is labeled recommended in the UI. No algorithmic or UI-default changes were made in this documentation update.
+- **Standard** remains the default validation level; it does not run complete schema validation. **Full** and independent geometry/material verification remain optional.
+- Historical experimental cautions are preserved as development history, not current guidance. Previous project benchmark passes support the default for the tested models, but do not imply exhaustive coverage of IFC2x3/IFC4/IFC4X3 or unknown exporters.
+
+## v1.5.3 Phase 1A (input safety and reliability)
+
+See [PHASE_1A_V153.md](PHASE_1A_V153.md). This update aborts on zero matching elements and duplicate element GlobalIDs; warns on partial requested-material matches; performs early temporary-file checks, cleans up run-created IFC temp files on failure, and stops performance sampling on failure. GitHub Actions now runs a headless real-IFC filter smoke test on the **frozen EXE**. Batch Cleanup and Standard validation remain the GUI defaults; by default only the filtered IFC is saved.

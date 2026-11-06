@@ -56,10 +56,14 @@ class PerformanceLog:
             self.records.append((label, elapsed, before, after, self._peak))
             self.notify(f'<<< {label}: {elapsed:.2f} s | RSS {after/2**20:.1f} MiB')
 
-    def finish(self, filename=None):
+    def stop_sampling(self):
+        """Idempotently stop the sampler, including on early exceptions."""
         self._stop.set()
-        if self._sample_thread:
+        if self._sample_thread and self._sample_thread.is_alive():
             self._sample_thread.join(timeout=1)
+
+    def finish(self, filename=None):
+        self.stop_sampling()
         self._peak = max(self._peak, self._rss())
         total = perf_counter() - self.started
         if filename is None:

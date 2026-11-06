@@ -127,5 +127,9 @@ def export_and_validate(model, input_path: str, output_path: Path,
             temp.replace(dest)
         return report
     except Exception:
-        notify(f'Export was not finalised; partial file (if any) at {temp}')
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            notify(f'WARNING: Could not clean temporary IFC {temp}: {cleanup_error}')
+        notify('IfcPatch export was not finalised; temporary IFC cleaned where possible.')
         raise

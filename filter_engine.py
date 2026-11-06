@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import json
 import traceback
+from difflib import get_close_matches
 from collections import Counter, deque
 from pathlib import Path
 from typing import Callable
@@ -62,6 +63,41 @@ def find_matching_materials(roots, wanted: set[str]):
     return found
 
 
+def ensure_unique_element_globalids(elements):
+    """Require unambiguous IFC element identity before any export."""
+    seen = set()
+    for element in elements:
+        gid = element.GlobalId
+        if gid in seen:
+            raise ValueError(
+                f'Duplicate IfcElement.GlobalId {gid!r} in source IFC. '
+                'Filtering aborted; correct duplicate element identifiers in the source model.')
+        seen.add(gid)
+
+
+def assess_selection(selected, rows, wanted_names, available_names, notify=print):
+    """Protect against empty exports; report partial material-name matches."""
+    if not selected:
+        available = sorted({name.strip() for name in available_names if name and name.strip()},
+                           key=str.casefold)
+        lowered = {name.casefold(): name for name in available}
+        examples = []
+        for requested in wanted_names:
+            guesses = get_close_matches(requested.casefold(), list(lowered), n=3, cutoff=0.6)
+            if guesses:
+                examples.append(f'{requested!r}: {", ".join(lowered[g] for g in guesses)}')
+        raise ValueError('No IFC elements match any requested material. '
+                         'No filtered IFC was written. Check spelling and material assignments.'
+                         + (f' Similar material names: {"; ".join(examples)}' if examples else ''))
+    matched = {name.casefold() for row in rows
+               for name in row['matched_materials'].split('; ') if name}
+    unmatched = [name for name in wanted_names if name.casefold() not in matched]
+    if unmatched:
+        notify('WARNING: The following requested materials did not select any elements: '
+               + '; '.join(unmatched) + '. Export will include only the matching materials.')
+    return unmatched
+
+
 def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                parent_mode: str = 'aggregates', audit_path: str | None = None,
                dry_run: bool = False, notify: Callable[[str], None] = print,
@@ -95,269 +131,290 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         existing = [path for path in outputs.values() if path.exists()]
         if existing:
             raise FileExistsError(f'Output already exists: {existing[0]}')
+        # Check stale temporary files before loading an expensive model.
+        temporary = [temporary_path for engine_name, path in outputs.items()
+                     for temporary_path in ((path.with_name(path.stem + '.incomplete.ifc'),)
+                         + ((path.with_name(path.stem + '.unpruned.incomplete.ifc'),)
+                            if engine_name == 'batch' else ()))
+                     if temporary_path.exists()]
+        if temporary:
+            raise FileExistsError('Stale temporary IFC exists: ' + str(temporary[0])
+                                  + '. Move or delete it before filtering.')
     perf = PerformanceLog(notify, label='selection')
-    notify(f'Loading model: {src.name}')
-    with perf.stage('01 Open source IFC'):
-        model = ifcopenshell.open(str(src))
-    if model is None:
-        raise ValueError('IfcOpenShell could not read this IFC file')
-    notify(f'IFC schema: {model.schema}')
-    with perf.stage('02 Index physical elements'):
-        elements = list(model.by_type('IfcElement'))
-        elem_by_id = {e.id(): e for e in elements}
-    notify(f'Physical elements to evaluate: {len(elements):,}')
-    perf.count('source_file_bytes', src.stat().st_size)
-    source_element_count = len(elements)
-    perf.count('source_elements', source_element_count)
-    source_validation = None
-    if validation == 'full' and not dry_run:
-        with perf.stage('02b Validate original IFC baseline'):
-            source_validation = full_validate(model, notify)
+    try:
+        notify(f'Loading model: {src.name}')
+        with perf.stage('01 Open source IFC'):
+            model = ifcopenshell.open(str(src))
+        if model is None:
+            raise ValueError('IfcOpenShell could not read this IFC file')
+        notify(f'IFC schema: {model.schema}')
+        with perf.stage('02 Index physical elements'):
+            elements = list(model.by_type('IfcElement'))
+            elem_by_id = {e.id(): e for e in elements}
+        notify(f'Physical elements to evaluate: {len(elements):,}')
+        ensure_unique_element_globalids(elements)
+        perf.count('source_file_bytes', src.stat().st_size)
+        source_element_count = len(elements)
+        perf.count('source_elements', source_element_count)
+        source_validation = None
+        if validation == 'full' and not dry_run:
+            with perf.stage('02b Validate original IFC baseline'):
+                source_validation = full_validate(model, notify)
 
-    # Retrieve effective material: occurrence-level association takes precedence over type.
-    # IfcOpenShell's get_material() handles IFC2X3 and IFC4 type relationships.
-    material_cache = {}
-    def material_state(e):
-        eid = e.id()
-        if eid not in material_cache:
-            direct = ifcopenshell.util.element.get_material(e, should_inherit=False)
-            if direct is not None:
-                root, source = direct, 'direct'
-            else:
-                root = ifcopenshell.util.element.get_material(e, should_inherit=True)
-                source = 'type' if root is not None else 'none'
-            material_cache[eid] = (root, source)
-        return material_cache[eid]
-
-    # Multiple occurrences often share a single material layer set or type material.
-    # Cache by the material root entity rather than the occurrence to avoid
-    # repeatedly traversing the same material subgraph thousands of times.
-    material_root_matches = {}
-    def matches(e):
-        root, _ = material_state(e)
-        if root is None:
-            return set()
-        rid = root.id()
-        if rid not in material_root_matches:
-            material_root_matches[rid] = find_matching_materials([root], wanted)
-        return material_root_matches[rid]
-
-    composition_parents = {}
-    all_parents = {}
-    permitted = {'IfcRelAggregates'} if parent_mode != 'none' else set()
-    if parent_mode == 'aggregates+nests':
-        permitted.add('IfcRelNests')
-    with perf.stage('03 Build parent relationship index'):
-        for relkind in ('IfcRelAggregates', 'IfcRelNests'):
-            for rel in model.by_type(relkind):
-                p = rel.RelatingObject
-                for child in rel.RelatedObjects:
-                    all_parents.setdefault(child.id(), []).append((p, relkind))
-                    if relkind in permitted:
-                        composition_parents.setdefault(child.id(), []).append((p, relkind))
-
-    def matching_parent(e):
-        queue = deque([(e.id(), 0)])
-        seen = {e.id()}
-        while queue:
-            child_id, depth = queue.popleft()
-            for parent, kind in composition_parents.get(child_id, ()):
-                pid = parent.id()
-                if pid in seen:
-                    continue
-                seen.add(pid)
-                pmatches = matches(parent)
-                if pmatches:
-                    return parent, kind, depth + 1, pmatches
-                # Conflicting parent assignment is a boundary, don't skip past it.
-                if material_state(parent)[1] == 'none':
-                    queue.append((pid, depth + 1))
-        return None
-
-    selected = set()
-    source_represented = set()
-    counts = Counter()
-    rows = []
-    with perf.stage('04 Material selection and audit rows'):
-        for i, element in enumerate(elements, 1):
-            root, source = material_state(element)
-            own_match = matches(element)
-            parent = None
-            if own_match:
-                reason = source
-                matching_names = own_match
-            elif root is not None:
-                reason, matching_names = 'excluded_other_material', set()
-            else:
-                parent = matching_parent(element) if permitted else None
-                if parent:
-                    ancestor, kind, depth, matching_names = parent
-                    reason = 'parent_aggregate' if kind == 'IfcRelAggregates' else 'parent_nest'
+        # Retrieve effective material: occurrence-level association takes precedence over type.
+        # IfcOpenShell's get_material() handles IFC2X3 and IFC4 type relationships.
+        material_cache = {}
+        def material_state(e):
+            eid = e.id()
+            if eid not in material_cache:
+                direct = ifcopenshell.util.element.get_material(e, should_inherit=False)
+                if direct is not None:
+                    root, source = direct, 'direct'
                 else:
-                    reason, matching_names = 'excluded_no_material', set()
-            keep = not reason.startswith('excluded_')
-            if keep:
-                selected.add(element.id())
-                if element.Representation is not None:
-                    source_represented.add(element.GlobalId)
-            counts[reason] += 1
-            rows.append({
-                'global_id': element.GlobalId,
-                'ifc_class': element.is_a(),
-                'name': element.Name or '',
-                'decision': 'KEEP' if keep else 'REMOVE',
-                'reason': reason,
-                'matched_materials': '; '.join(sorted(matching_names)),
-                'parent_global_id': parent[0].GlobalId if parent and hasattr(parent[0], 'GlobalId') else '',
-                'parent_distance': parent[2] if parent else '',
-            })
-            if i % 20000 == 0:
-                notify(f'Checked {i:,} / {len(elements):,} elements')
-    notify('Selected: {:,} / {:,}'.format(len(selected), len(elements)))
-    perf.count('selected_elements', len(selected))
-    for key, count in sorted(counts.items()):
-        notify(f'  {key}: {count:,}')
+                    root = ifcopenshell.util.element.get_material(e, should_inherit=True)
+                    source = 'type' if root is not None else 'none'
+                material_cache[eid] = (root, source)
+            return material_cache[eid]
 
-    # Parent shells preserve composition and placement for included descendants.
-    # Structural supporting openings are also preserved to avoid filling holes.
-    with perf.stage('05 Supporting assemblies and openings'):
-        shells = set()
-        for sid in list(selected):
-            queue = deque([sid])
-            seen = {sid}
+        # Multiple occurrences often share a single material layer set or type material.
+        # Cache by the material root entity rather than the occurrence to avoid
+        # repeatedly traversing the same material subgraph thousands of times.
+        material_root_matches = {}
+        def matches(e):
+            root, _ = material_state(e)
+            if root is None:
+                return set()
+            rid = root.id()
+            if rid not in material_root_matches:
+                material_root_matches[rid] = find_matching_materials([root], wanted)
+            return material_root_matches[rid]
+
+        composition_parents = {}
+        all_parents = {}
+        permitted = {'IfcRelAggregates'} if parent_mode != 'none' else set()
+        if parent_mode == 'aggregates+nests':
+            permitted.add('IfcRelNests')
+        with perf.stage('03 Build parent relationship index'):
+            for relkind in ('IfcRelAggregates', 'IfcRelNests'):
+                for rel in model.by_type(relkind):
+                    p = rel.RelatingObject
+                    for child in rel.RelatedObjects:
+                        all_parents.setdefault(child.id(), []).append((p, relkind))
+                        if relkind in permitted:
+                            composition_parents.setdefault(child.id(), []).append((p, relkind))
+
+        def matching_parent(e):
+            queue = deque([(e.id(), 0)])
+            seen = {e.id()}
             while queue:
-                eid = queue.popleft()
-                for ancestor, _ in all_parents.get(eid, ()):
-                    aid = ancestor.id()
-                    if aid in seen:
+                child_id, depth = queue.popleft()
+                for parent, kind in composition_parents.get(child_id, ()):
+                    pid = parent.id()
+                    if pid in seen:
                         continue
-                    seen.add(aid)
-                    if aid in elem_by_id and aid not in selected:
-                        shells.add(aid)
-                    queue.append(aid)
-        opening_ids = set()
-        for rel in model.by_type('IfcRelVoidsElement'):
-            if rel.RelatingBuildingElement.id() in selected or rel.RelatingBuildingElement.id() in shells:
-                opening_ids.add(rel.RelatedOpeningElement.id())
-        # Retain openings but never count them as selected physical-material elements.
-        keep_ids = selected | shells | opening_ids
+                    seen.add(pid)
+                    pmatches = matches(parent)
+                    if pmatches:
+                        return parent, kind, depth + 1, pmatches
+                    # Conflicting parent assignment is a boundary, don't skip past it.
+                    if material_state(parent)[1] == 'none':
+                        queue.append((pid, depth + 1))
+            return None
 
-    if save_audit or dry_run:
-        with perf.stage('06 Write audit CSV'):
-            audit.parent.mkdir(parents=True, exist_ok=True)
-            with audit.open('w', newline='', encoding='utf-8-sig') as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
-                    'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
-                writer.writeheader()
-                writer.writerows(rows)
-        notify(f'Audit CSV: {audit}')
-    timing_path = dst.with_suffix('.timing.csv')
-    if dry_run:
+        selected = set()
+        source_represented = set()
+        counts = Counter()
+        rows = []
+        with perf.stage('04 Material selection and audit rows'):
+            for i, element in enumerate(elements, 1):
+                root, source = material_state(element)
+                own_match = matches(element)
+                parent = None
+                if own_match:
+                    reason = source
+                    matching_names = own_match
+                elif root is not None:
+                    reason, matching_names = 'excluded_other_material', set()
+                else:
+                    parent = matching_parent(element) if permitted else None
+                    if parent:
+                        ancestor, kind, depth, matching_names = parent
+                        reason = 'parent_aggregate' if kind == 'IfcRelAggregates' else 'parent_nest'
+                    else:
+                        reason, matching_names = 'excluded_no_material', set()
+                keep = not reason.startswith('excluded_')
+                if keep:
+                    selected.add(element.id())
+                    if element.Representation is not None:
+                        source_represented.add(element.GlobalId)
+                counts[reason] += 1
+                rows.append({
+                    'global_id': element.GlobalId,
+                    'ifc_class': element.is_a(),
+                    'name': element.Name or '',
+                    'decision': 'KEEP' if keep else 'REMOVE',
+                    'reason': reason,
+                    'matched_materials': '; '.join(sorted(matching_names)),
+                    'parent_global_id': parent[0].GlobalId if parent and hasattr(parent[0], 'GlobalId') else '',
+                    'parent_distance': parent[2] if parent else '',
+                })
+                if i % 20000 == 0:
+                    notify(f'Checked {i:,} / {len(elements):,} elements')
+        notify('Selected: {:,} / {:,}'.format(len(selected), len(elements)))
+        unmatched_materials = assess_selection(selected, rows, wanted_names,
+                          ((m.Name or '') for m in model.by_type('IfcMaterial')), notify)
+        perf.count('selected_elements', len(selected))
+        for key, count in sorted(counts.items()):
+            notify(f'  {key}: {count:,}')
+
+        # Parent shells preserve composition and placement for included descendants.
+        # Structural supporting openings are also preserved to avoid filling holes.
+        with perf.stage('05 Supporting assemblies and openings'):
+            shells = set()
+            for sid in list(selected):
+                queue = deque([sid])
+                seen = {sid}
+                while queue:
+                    eid = queue.popleft()
+                    for ancestor, _ in all_parents.get(eid, ()):
+                        aid = ancestor.id()
+                        if aid in seen:
+                            continue
+                        seen.add(aid)
+                        if aid in elem_by_id and aid not in selected:
+                            shells.add(aid)
+                        queue.append(aid)
+            opening_ids = set()
+            for rel in model.by_type('IfcRelVoidsElement'):
+                if rel.RelatingBuildingElement.id() in selected or rel.RelatingBuildingElement.id() in shells:
+                    opening_ids.add(rel.RelatedOpeningElement.id())
+            # Retain openings but never count them as selected physical-material elements.
+            keep_ids = selected | shells | opening_ids
+
+        if save_audit or dry_run:
+            with perf.stage('06 Write audit CSV'):
+                audit.parent.mkdir(parents=True, exist_ok=True)
+                with audit.open('w', newline='', encoding='utf-8-sig') as stream:
+                    writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
+                        'global_id','ifc_class','name','decision','reason','matched_materials','parent_global_id','parent_distance'])
+                    writer.writeheader()
+                    writer.writerows(rows)
+            notify(f'Audit CSV: {audit}')
+        timing_path = dst.with_suffix('.timing.csv')
+        if dry_run:
+            perf.finish(timing_path if save_reports else None)
+            notify('Dry run finished; no IFC was written.')
+            return {'selected': len(selected), 'total': source_element_count,
+                    'counts': dict(counts), 'unmatched_materials': unmatched_materials,
+                'audit': str(audit), 'timing': str(timing_path) if save_reports else None}
+
+        # Common selection shared between both engines. Each engine has an isolated
+        # output file and timing log. Batch reads a separate IFC instance.
+        expected_ids = {r['global_id'] for r in rows if r['decision'] == 'KEEP'}
+        support_openings = {elem_by_id[i].GlobalId for i in opening_ids if i in elem_by_id}
+        support_shells = {elem_by_id[i].GlobalId for i in shells if i in elem_by_id}
+        source_represented.update(elem_by_id[i].GlobalId for i in opening_ids
+                                  if i in elem_by_id and elem_by_id[i].Representation is not None)
+        perf.count('support_openings', len(support_openings))
+        perf.count('support_shells', len(support_shells))
         perf.finish(timing_path if save_reports else None)
-        notify('Dry run finished; no IFC was written.')
-        return {'selected': len(selected), 'total': source_element_count,
-                'counts': dict(counts), 'audit': str(audit), 'timing': str(timing_path) if save_reports else None}
+        results = {}
+        errors = {}
+        comparison_file = dst.with_suffix('.comparison.json')
+        for name, target_path in outputs.items():
+            eng_perf = PerformanceLog(notify, label=name)
+            eng_perf.count('selected_elements', len(expected_ids))
+            eng_perf.count('input_bytes', src.stat().st_size)
+            notify(f'==== {name.upper()} ENGINE ====')
+            try:
+                if name == 'ifcpatch':
+                    report = export_and_validate(model, str(src), target_path,
+                                                 expected_ids, support_openings, notify,
+                                                 timings=eng_perf, source_represented=source_represented,
+                                                 validation=validation)
+                else:
+                    with eng_perf.stage('B-0 Release reference/selection model memory'):
+                        import gc
+                        material_cache.clear()
+                        material_root_matches.clear()
+                        composition_parents.clear()
+                        all_parents.clear()
+                        elem_by_id.clear()
+                        elements.clear()
+                        del model
+                        gc.collect()
+                    with eng_perf.stage('B-1 Reopen independent source IFC'):
+                        batch_model = ifcopenshell.open(str(src))
+                        if batch_model is None:
+                            raise RuntimeError('Unable to open independent IFC instance for batch engine')
+                    report = export_batch(batch_model, target_path, expected_ids,
+                                          support_openings | support_shells,
+                                          source_represented, notify, timings=eng_perf,
+                                          validation=validation, save_reports=save_reports)
+                    del batch_model
+                eng_perf.count('output_bytes', target_path.stat().st_size)
+                eng_perf.count('output_elements', report['physical_count'])
+                results[name] = {'path': str(target_path), 'bytes': target_path.stat().st_size,
+                                 'validation': report}
+            except Exception as exc:
+                errors[name] = traceback.format_exc()
+                notify(f'{name} engine FAILED: {exc}')
+                # Do not suppress error in single-engine mode.
+            finally:
+                results.setdefault(name, {})['timing'] = eng_perf.finish(
+                    target_path.with_suffix('.timing.csv') if save_reports else None)
+        # Write even on partial failure to keep successful reference output usable.
+        comparison = {
+            'application_version': '1.4.6', 'engine_mode': engine,
+            'validation_mode': validation, 'input': str(src),
+            'materials': wanted_names, 'parent_mode': parent_mode,
+            'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
+            'support_openings': len(support_openings), 'engines': results,
+            'errors': errors,
+            'source_validation': source_validation,
+            }
+        if engine == 'both' and all('path' in results.get(k, {}) for k in ('ifcpatch', 'batch')):
+            ratio = results['batch']['bytes'] / max(results['ifcpatch']['bytes'], 1)
+            comparison['batch_to_reference_size_ratio'] = ratio
+            comparison['batch_size_warning'] = ratio > 1.5
+            if ratio > 1.5:
+                notify(f'WARNING: Batch output is {ratio:.2f}x IfcPatch size, not comparably compact.')
+            with perf.stage('14 Compare engine outputs'):
+                comparison['parity'] = compare_outputs(results['ifcpatch']['path'],
+                                                        results['batch']['path'], expected_ids,
+                                                        source_represented)
+        if source_validation is not None:
+            for engine_name, details in results.items():
+                val = details.get('validation')
+                if isinstance(val, dict) and 'schema_validation_errors' in val:
+                    val['schema_errors_vs_source'] = (
+                        val['schema_validation_errors'] - source_validation['schema_validation_errors'])
+                    val['schema_validation_comparison_note'] = (
+                        'Counts are not directly equivalent for different-sized IFC graphs. '
+                        'Positive difference is a concern; a negative difference does not prove correctness. '
+                        'Review error categories and examples separately.')
+        if save_reports:
+            comparison_file.parent.mkdir(parents=True, exist_ok=True)
+            with comparison_file.open('w', encoding='utf-8') as f:
+                json.dump(comparison, f, indent=2, ensure_ascii=False)
+            notify(f'Comparison: {comparison_file}')
+        if errors:
+            details = f'Details in {comparison_file}' if save_reports else 'See processing log.'
+            # Surface the actual engine exception rather than only 'engine failed'.
+            engine_name, tb = next(iter(errors.items()))
+            error_line = tb.strip().splitlines()[-1] if tb.strip() else 'Unknown error'
+            raise RuntimeError(f'{engine_name} engine failed: {error_line}. {details}')
+        if comparison.get('parity', {}).get('equivalent') is False:
+            details = f'Inspect {comparison_file}' if save_reports else 'See processing log.'
+            raise RuntimeError(f'Engine output mismatch; do not use Batch output without further review. {details}')
+        return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts),
+                'unmatched_materials': unmatched_materials,
+                'audit': str(audit) if (save_audit or dry_run) else None,
+                'comparison': str(comparison_file) if save_reports else None, 'engines': results}
 
-    # Common selection shared between both engines. Each engine has an isolated
-    # output file and timing log. Batch reads a separate IFC instance.
-    expected_ids = {r['global_id'] for r in rows if r['decision'] == 'KEEP'}
-    support_openings = {elem_by_id[i].GlobalId for i in opening_ids if i in elem_by_id}
-    support_shells = {elem_by_id[i].GlobalId for i in shells if i in elem_by_id}
-    source_represented.update(elem_by_id[i].GlobalId for i in opening_ids
-                              if i in elem_by_id and elem_by_id[i].Representation is not None)
-    perf.count('support_openings', len(support_openings))
-    perf.count('support_shells', len(support_shells))
-    perf.finish(timing_path if save_reports else None)
-    results = {}
-    errors = {}
-    comparison_file = dst.with_suffix('.comparison.json')
-    for name, target_path in outputs.items():
-        eng_perf = PerformanceLog(notify, label=name)
-        eng_perf.count('selected_elements', len(expected_ids))
-        eng_perf.count('input_bytes', src.stat().st_size)
-        notify(f'==== {name.upper()} ENGINE ====')
-        try:
-            if name == 'ifcpatch':
-                report = export_and_validate(model, str(src), target_path,
-                                             expected_ids, support_openings, notify,
-                                             timings=eng_perf, source_represented=source_represented,
-                                             validation=validation)
-            else:
-                with eng_perf.stage('B-0 Release reference/selection model memory'):
-                    import gc
-                    material_cache.clear()
-                    material_root_matches.clear()
-                    composition_parents.clear()
-                    all_parents.clear()
-                    elem_by_id.clear()
-                    elements.clear()
-                    del model
-                    gc.collect()
-                with eng_perf.stage('B-1 Reopen independent source IFC'):
-                    batch_model = ifcopenshell.open(str(src))
-                    if batch_model is None:
-                        raise RuntimeError('Unable to open independent IFC instance for batch engine')
-                report = export_batch(batch_model, target_path, expected_ids,
-                                      support_openings | support_shells,
-                                      source_represented, notify, timings=eng_perf,
-                                      validation=validation, save_reports=save_reports)
-                del batch_model
-            eng_perf.count('output_bytes', target_path.stat().st_size)
-            eng_perf.count('output_elements', report['physical_count'])
-            results[name] = {'path': str(target_path), 'bytes': target_path.stat().st_size,
-                             'validation': report}
-        except Exception as exc:
-            errors[name] = traceback.format_exc()
-            notify(f'{name} engine FAILED: {exc}')
-            # Do not suppress error in single-engine mode.
-        finally:
-            results.setdefault(name, {})['timing'] = eng_perf.finish(
-                target_path.with_suffix('.timing.csv') if save_reports else None)
-    # Write even on partial failure to keep successful reference output usable.
-    comparison = {
-        'application_version': '1.4.6', 'engine_mode': engine,
-        'validation_mode': validation, 'input': str(src),
-        'materials': wanted_names, 'parent_mode': parent_mode,
-        'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
-        'support_openings': len(support_openings), 'engines': results,
-        'errors': errors,
-        'source_validation': source_validation,
-        }
-    if engine == 'both' and all('path' in results.get(k, {}) for k in ('ifcpatch', 'batch')):
-        ratio = results['batch']['bytes'] / max(results['ifcpatch']['bytes'], 1)
-        comparison['batch_to_reference_size_ratio'] = ratio
-        comparison['batch_size_warning'] = ratio > 1.5
-        if ratio > 1.5:
-            notify(f'WARNING: Batch output is {ratio:.2f}x IfcPatch size, not comparably compact.')
-        with perf.stage('14 Compare engine outputs'):
-            comparison['parity'] = compare_outputs(results['ifcpatch']['path'],
-                                                    results['batch']['path'], expected_ids,
-                                                    source_represented)
-    if source_validation is not None:
-        for engine_name, details in results.items():
-            val = details.get('validation')
-            if isinstance(val, dict) and 'schema_validation_errors' in val:
-                val['schema_errors_vs_source'] = (
-                    val['schema_validation_errors'] - source_validation['schema_validation_errors'])
-                val['schema_validation_comparison_note'] = (
-                    'Counts are not directly equivalent for different-sized IFC graphs. '
-                    'Positive difference is a concern; a negative difference does not prove correctness. '
-                    'Review error categories and examples separately.')
-    if save_reports:
-        comparison_file.parent.mkdir(parents=True, exist_ok=True)
-        with comparison_file.open('w', encoding='utf-8') as f:
-            json.dump(comparison, f, indent=2, ensure_ascii=False)
-        notify(f'Comparison: {comparison_file}')
-    if errors:
-        details = f'Details in {comparison_file}' if save_reports else 'See processing log.'
-        raise RuntimeError(f'One or more engines failed: {", ".join(errors)}. '
-                           f'IfcPatch reference export (if successful) remains available. {details}')
-    if comparison.get('parity', {}).get('equivalent') is False:
-        details = f'Inspect {comparison_file}' if save_reports else 'See processing log.'
-        raise RuntimeError(f'Engine output mismatch; do not use experimental result. {details}')
-    return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts),
-            'audit': str(audit) if (save_audit or dry_run) else None,
-            'comparison': str(comparison_file) if save_reports else None, 'engines': results}
+    finally:
+        # Failure before the normal finish() must not leave the RSS sampler running.
+        perf.stop_sampling()
 
 
 def output_paths(path: Path, engine: str) -> dict[str, Path]:

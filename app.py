@@ -1,4 +1,4 @@
-"""IFC Material Filter v1.5.2: focused action button and fresh-file status reset.
+"""IFC Material Filter v1.5.3: Phase 1A input safety and reliability.
 
 Keep engine logic in filter_engine unchanged. The GUI only dispatches to it.
 """
@@ -17,7 +17,7 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.5.2')
+        self.title('IFC Material Filter v1.5.3')
         self.geometry('760x620')
         self.minsize(620, 570)
         self.q = queue.Queue()
@@ -310,7 +310,14 @@ class FilterApp(tk.Tk):
                     self.stagevar.set(str(data)[:115])
                 elif kind == 'done':
                     self._finish('Filtering completed successfully.')
-                    messagebox.showinfo('Completed', 'IFC filtering completed. Details are available in Advanced options > Verification tools > View processing log.')
+                    unmatched = data.get('unmatched_materials', [])
+                    if unmatched:
+                        messagebox.showwarning('Filtering completed with a material warning',
+                            'The IFC was filtered, but these requested material names did not match '
+                            'any selected elements:\n' + '; '.join(unmatched)
+                            + '\n\nReview the input names and processing log before using this IFC.')
+                    else:
+                        messagebox.showinfo('Completed', 'IFC filtering completed. Details are available in Advanced options > Verification tools > View processing log.')
                 elif kind == 'geometry_done':
                     self._finish('Geometry verification completed.')
                     messagebox.showinfo('Geometry verification',
@@ -322,11 +329,20 @@ class FilterApp(tk.Tk):
                 elif kind == 'error':
                     self._log('ERROR\n' + str(data))
                     self._finish('Processing failed. See processing log.')
-                    messagebox.showerror('Failed', 'Processing failed. Open Advanced options > Verification tools > View processing log for details.')
+                    # Last traceback line contains the actionable exception.
+                    detail = str(data).strip().splitlines()[-1] if str(data).strip() else 'Unknown error'
+                    messagebox.showerror('Processing failed',
+                                         f'{detail}\n\nFull details: Advanced options > '
+                                         'Verification tools > View processing log.')
         except queue.Empty:
             pass
         self.after(120, self._poll)
 
 
 if __name__ == '__main__':
-    FilterApp().mainloop()
+    import sys
+    if '--selftest' in sys.argv:
+        from selftest import run_selftest
+        run_selftest()
+    else:
+        FilterApp().mainloop()
