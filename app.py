@@ -339,10 +339,32 @@ class FilterApp(tk.Tk):
         self.after(120, self._poll)
 
 
-if __name__ == '__main__':
+def main(argv=None):
     import sys
-    if '--selftest' in sys.argv:
+    import traceback
+    argv = sys.argv[1:] if argv is None else argv
+    if '--selftest' not in argv:
+        FilterApp().mainloop()
+        return 0
+
+    # The Windows executable is built --windowed; stdout/stderr may be absent.
+    # Write a result file that the CI runner can inspect, including failures.
+    if '--selftest-report' not in argv:
+        raise SystemExit('A --selftest-report PATH is required with --selftest.')
+    pos = argv.index('--selftest-report')
+    if pos + 1 >= len(argv):
+        raise SystemExit('Missing path after --selftest-report.')
+    report = Path(argv[pos + 1])
+    try:
         from selftest import run_selftest
         run_selftest()
-    else:
-        FilterApp().mainloop()
+    except BaseException:
+        report.write_text('FAIL\n' + traceback.format_exc(), encoding='utf-8')
+        return 1
+    report.write_text('PASS\nFrozen application completed real IFC filtering.\n', encoding='utf-8')
+    return 0
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())

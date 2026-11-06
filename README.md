@@ -284,3 +284,12 @@ CLI behavior remains backward compatible; `--no-audit --no-reports` disables rou
 ## v1.5.3 Phase 1A (input safety and reliability)
 
 See [PHASE_1A_V153.md](PHASE_1A_V153.md). This update aborts on zero matching elements and duplicate element GlobalIDs; warns on partial requested-material matches; performs early temporary-file checks, cleans up run-created IFC temp files on failure, and stops performance sampling on failure. GitHub Actions now runs a headless real-IFC filter smoke test on the **frozen EXE**. Batch Cleanup and Standard validation remain the GUI defaults; by default only the filtered IFC is saved.
+
+
+### Manually triggering the Windows build
+
+The GitHub Actions workflow is **manual-only** (`workflow_dispatch`). Uploading or committing source changes does not start a Windows build automatically. To build, open **Actions > Build Windows portable EXE > Run workflow**, select the branch and confirm.
+
+### Frozen EXE smoke-test diagnostics (v1.5.3 build correction)
+
+The GitHub Actions workflow uses Python `subprocess.run` to wait for the frozen GUI-subsystem executable. The executable's `--selftest --selftest-report <path>` mode writes a PASS/FAIL diagnostic to `build-logs/frozen-selftest.txt`, which is uploaded with other build logs even if the step fails. This replaces the unreliable PowerShell `$LASTEXITCODE` check after directly launching a `--windowed` executable.
