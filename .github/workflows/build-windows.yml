@@ -72,6 +72,13 @@ jobs:
           if ($buildExit -ne 0) { throw "PyInstaller failed with exit code $buildExit. See build-logs/pyinstaller.txt." }
           if (-not (Test-Path 'dist/IFC_Material_Filter.exe')) { throw 'Expected executable missing after PyInstaller.' }
 
+      - name: Smoke test frozen Windows EXE (headless real IFC export)
+        run: |
+          & .\dist\IFC_Material_Filter.exe --selftest
+          $smokeExit = $LASTEXITCODE
+          if ($smokeExit -ne 0) { throw "Frozen executable smoke test failed with exit code $smokeExit." }
+          Write-Host 'Frozen executable completed headless IFC filtering successfully.'
+
       - name: Package portable EXE
         run: |
           Compress-Archive -Path dist/IFC_Material_Filter.exe -DestinationPath IFC_Material_Filter_Windows.zip -Force
