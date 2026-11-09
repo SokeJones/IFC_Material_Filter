@@ -66,7 +66,7 @@ class Phase3Tests(unittest.TestCase):
             cli.main(['source.ifc','--material','Concrete'])
 
     def test_m2_version_centralized(self):
-        self.assertEqual(__version__, '1.5.6')
+        self.assertEqual(__version__, '1.5.6.1')
         engine = (ROOT / 'filter_engine.py').read_text(encoding='utf-8')
         app = (ROOT / 'app.py').read_text(encoding='utf-8')
         self.assertIn("'application_version': __version__", engine)
@@ -154,13 +154,29 @@ class CountingTests(unittest.TestCase):
                 return iter([Entity(1),Entity(2),Entity(3)])
         self.assertEqual(count_unreachable_entities(Model(), {1,3}), 1)
 
+    def test_m7_len_raises_typeerror_and_iteration_fallback_succeeds(self):
+        from batch_export import count_unreachable_entities
+        class Entity:
+            def __init__(self, eid): self.eid = eid
+            def id(self): return self.eid
+        class Model:
+            def __len__(self):
+                raise TypeError('object of type file has no len()')
+            def __iter__(self):
+                return iter((Entity(11), Entity(22), Entity(33)))
+        self.assertEqual(count_unreachable_entities(Model(), {11, 33}), 1)
+
     @unittest.skipUnless(__import__('importlib').util.find_spec('ifcopenshell'),
                          'Requires IfcOpenShell on GitHub Windows runner')
-    def test_m7_ifcopenshell_length_matches_actual_step_records(self):
+    def test_m7_ifcopenshell_fallback_matches_actual_step_records(self):
         import ifcopenshell
         from batch_export import count_unreachable_entities
         model = ifcopenshell.file(schema='IFC4')
         a = model.create_entity('IfcCartesianPoint', Coordinates=(0.0, 0.0, 0.0))
         model.create_entity('IfcCartesianPoint', Coordinates=(2.0, 0.0, 0.0))
-        self.assertEqual(len(model), sum(1 for _ in model))
-        self.assertEqual(count_unreachable_entities(model, {a.id()}), 1)
+        # IfcOpenShell 0.8.5 file objects are iterable but have no __len__.
+        # Check the actual diagnostic count instead of assuming a length API.
+        reachable = {a.id()}
+        expected = sum(1 for entity in model if entity.id() not in reachable)
+        self.assertEqual(expected, 1)
+        self.assertEqual(count_unreachable_entities(model, reachable), expected)
