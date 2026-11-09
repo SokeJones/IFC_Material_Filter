@@ -1,19 +1,19 @@
-# IFC Material Filter v1.5.6.1 — Phase 3 integration-test hotfix
+# IFC Material Filter v1.6.1 — Case-sensitive filtering and material inventory
 
-**Status:** v1.5.6.1 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
+**Status:** v1.6.1 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
 ## Everyday workflow
 
 1. Select an input IFC.
-2. Enter **Material names (one per line or separated by semicolons)**. The field starts empty.
+2. Enter **Material names (one per line or separated by semicolons)**, using exact capitalization; the field starts empty. Alternatively, use **Advanced options > Material tools > Scan IFC materials...** to select actual IFC names.
 3. Accept or change the output filename and click **Filter IFC**.
 4. Follow the animated progress indicator and status message. It is indeterminate, not a fabricated percentage.
 
 **Defaults:** Batch Cleanup, Standard (`basic`) validation, and `aggregates` parent handling. These settings can be changed under **Advanced options > Export settings...**. Geometry verification, material verification, and the scrollable, savable processing log are under **Advanced options > Verification tools**.
 
-The source IFC is never overwritten. Existing destinations are not overwritten. Optional verification actions do not slow down normal filtering.
+The source IFC is never overwritten. Existing destinations are not overwritten. The material scan and optional verification actions do not slow down routine filtering because they run only when explicitly requested.
 
-See [`V1_5_UI.md`](V1_5_UI.md) for the UI guide and limitations.
+See [`V1_6_UI.md`](V1_6_UI.md) for the scanner UI and acceptance instructions. `V1_5_UI.md` documents the earlier interface.
 
 ## Engines and outputs
 
@@ -21,11 +21,19 @@ The default **Batch Cleanup** (`batch`) engine writes the requested filtered IFC
 
 ## Material semantics
 
-- Multiple names: one per line, or separated by semicolons (OR logic; case-insensitive exact comparison).
+- Multiple names: one per line, or separated by semicolons (OR logic; **case-sensitive exact comparison**, trimmed at the ends). For example, `Concrete` and `concrete` are different names. Case-only mismatches are suggested but never silently accepted.
 - Direct occurrence materials take precedence over IFC type material assignments.
 - Parent aggregation is optional (default `aggregates`) and adds unassigned children whose parent matches. This is a selection heuristic, **not normative IFC material inheritance**.
 - Optional `aggregates+nests` follows nesting parents as well.
 - Openings and unrepresented assembly shells are retained where needed.
+
+## v1.6 material inventory (Advanced options > Material tools)
+
+Choose **Scan IFC materials...** to inspect the currently selected input IFC without filtering or writing any files. A dedicated window shows every distinct, nonblank `IfcMaterial.Name` in that source, including names that have zero material-matching elements. Case variants appear as separate rows. Columns show **matching elements**, **direct**, **type** and **parent** (for the currently selected parent mode in Export settings). The displayed counts represent the filter selection for that name **individually**, before retaining support shells and openings; different material names can select the same element (for example, different materials within a layer set), so totals across rows must not be summed to predict an OR-filter result. The inventory uses the same `IfcMaterial` graph walk and effective occurrence-before-type precedence as the filter.
+
+The search box is intentionally **case-insensitive** for convenience. Select rows using Ctrl/Shift, or **Select visible**, then click **Use selected materials** to replace the main material text with exact IFC names. **Filter IFC** remains a separate user action. Scanning happens in a worker thread with the ordinary progress indicator and processing log. Inventory results are cached in memory only for the current path, source file size/modification time and parent mode; a changed source or setting invalidates them. A rescan may require reopening a large source IFC. No geometry is generated and no audit, report or IFC output is saved by scanning.
+
+The scanner and the filtering engine both require unique `IfcElement.GlobalId` values. A model with duplicate IDs is rejected rather than generating ambiguous counts or exports.
 
 ## Batch Cleanup algorithm (default engine)
 
@@ -75,7 +83,7 @@ python cli.py original.ifc --material "Concrete" --dry-run
 - Geometry verification compares placement matrices numerically, with requested project-unit tolerance for **translations** and an independent dimensionless orientation tolerance (`1e-8`); the world-space tessellation hash method remains otherwise unchanged.
 - The unreachable-entity diagnostic counter uses a length-based fast path **only when the model supports `len()`**. IfcOpenShell 0.8.5's `file` objects do not; the original iterator-based count is retained. v1.5.6.1 fixes the GitHub integration test to verify actual counts instead of assuming `len(model)`. This is not a runtime optimization for the pinned IfcOpenShell version. Export/pruning semantics are unchanged.
 - The material entry field starts empty; all prior hints and Advanced Options are preserved.
-- Performance findings m10/m12 were reviewed using the measured reference-model timings. Both relationship removal and reachability behavior are **unchanged**, pending targeted scaling evidence. See `PHASE_3_V156.md`.
+- Performance findings m10/m12 were **closed without implementation** due to regression risk. Relationship removal and reachability behavior remain unchanged. See `PHASE_3_V156.md`.
 
 ## Phase 2 — v1.5.5 semantic preservation (M1, M2, M5, M6, M9)
 

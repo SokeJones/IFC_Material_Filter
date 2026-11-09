@@ -1,6 +1,6 @@
 """Material-based IFC extraction using IfcOpenShell and IfcPatch.
 
-Material names: case-insensitive exact matches (trimmed), OR across requested names.
+Material names: case-sensitive exact matches (trimmed), OR across requested names.
 Parent aggregation/nesting material is a heuristic, not normative IFC inheritance.
 """
 from __future__ import annotations
@@ -28,9 +28,9 @@ def parse_materials(value: str | list[str]) -> list[str]:
     result, seen = [], set()
     for item in chunks:
         name = item.strip()
-        if name and name.casefold() not in seen:
+        if name and name not in seen:
             result.append(name)
-            seen.add(name.casefold())
+            seen.add(name)
     return result
 
 
@@ -53,7 +53,7 @@ def find_matching_materials(roots, wanted: set[str]):
         kind = entity.is_a()
         if kind == 'IfcMaterial':
             name = (entity.Name or '').strip()
-            if name.casefold() in wanted:
+            if name in wanted:
                 found.add(name)
             continue
         if not kind.startswith('IfcMaterial'):
@@ -78,26 +78,44 @@ def ensure_unique_element_globalids(elements):
         seen.add(gid)
 
 
+def _material_suggestions(requested, available_names):
+    """Exact-case suggestions first; case-insensitive fuzzy lookup second.
+
+    Suggestions are advisory only: they never broaden material selection.
+    """
+    available = sorted({(name or '').strip() for name in available_names if (name or '').strip()},
+                       key=lambda name: (name.casefold(), name))
+    casing = [name for name in available if name.casefold() == requested.casefold() and name != requested]
+    if casing:
+        return casing[:3]
+    folded = {name.casefold() for name in available}
+    nearby = set(get_close_matches(requested.casefold(), sorted(folded), n=3, cutoff=0.6))
+    return [name for name in available if name.casefold() in nearby][:3]
+
+
 def assess_selection(selected, rows, wanted_names, available_names, notify=print):
-    """Protect against empty exports; report partial material-name matches."""
+    """Fail on no matches; warn about partial *case-sensitive* mismatches."""
+    available = list(available_names)
     if not selected:
-        available = sorted({name.strip() for name in available_names if name and name.strip()},
-                           key=str.casefold)
-        lowered = {name.casefold(): name for name in available}
         examples = []
         for requested in wanted_names:
-            guesses = get_close_matches(requested.casefold(), list(lowered), n=3, cutoff=0.6)
-            if guesses:
-                examples.append(f'{requested!r}: {", ".join(lowered[g] for g in guesses)}')
-        raise ValueError('No IFC elements match any requested material. '
-                         'No filtered IFC was written. Check spelling and material assignments.'
+            suggestions = _material_suggestions(requested, available)
+            if suggestions:
+                examples.append(f'{requested!r}: {", ".join(suggestions)}')
+        raise ValueError('No IFC elements match any requested material (case-sensitive). '
+                         'No filtered IFC was written. Check spelling and capitalization.'
                          + (f' Similar material names: {"; ".join(examples)}' if examples else ''))
-    matched = {name.casefold() for row in rows
+    matched = {name for row in rows
                for name in row['matched_materials'].split('; ') if name}
-    unmatched = [name for name in wanted_names if name.casefold() not in matched]
+    unmatched = [name for name in wanted_names if name not in matched]
     if unmatched:
-        notify('WARNING: The following requested materials did not select any elements: '
-               + '; '.join(unmatched) + '. Export will include only the matching materials.')
+        details = []
+        for requested in unmatched:
+            suggestions = _material_suggestions(requested, available)
+            details.append(requested + (f' (possible match: {", ".join(suggestions)})' if suggestions else ''))
+        notify('WARNING: The following requested materials did not select any elements '
+               '(case-sensitive): ' + '; '.join(details)
+               + '. Export will include only the matching materials.')
     return unmatched
 
 
@@ -114,7 +132,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
     wanted_names = parse_materials(materials)
     if not wanted_names:
         raise ValueError('Enter at least one material name.')
-    wanted = {name.casefold() for name in wanted_names}
+    wanted = set(wanted_names)
     if engine not in ('both', 'ifcpatch', 'batch'):
         raise ValueError('Invalid engine mode')
     if validation not in ('full', 'basic'):

@@ -38,14 +38,21 @@ class FilterApp(tk.Tk):
         self.log_window = None
         self.log_text = None
         self.operation_start = None
+        self.material_scan_result = None
+        self.material_scan_fingerprint = None
+        self.material_scan_window = None
         self._layout()
         self.filevar.trace_add('write', self._input_changed)
+        self.parentvar.trace_add('write', self._scan_settings_changed)
         self.after(120, self._poll)
 
     def _layout(self):
         menubar = tk.Menu(self)
         advanced = tk.Menu(menubar, tearoff=False)
         advanced.add_command(label='Export settings...', command=self._advanced_settings)
+        material_tools = tk.Menu(advanced, tearoff=False)
+        material_tools.add_command(label='Scan IFC materials...', command=self._start_material_scan)
+        advanced.add_cascade(label='Material tools', menu=material_tools)
         advanced.add_separator()
         verification = tk.Menu(advanced, tearoff=False)
         verification.add_command(label='Verify geometry...', command=self._start_verify)
@@ -93,13 +100,31 @@ class FilterApp(tk.Tk):
         self.progress = ttk.Progressbar(outer, orient='horizontal', mode='indeterminate')
         self.progress.pack(fill='x', pady=(6, 3))
         ttk.Label(outer, textvariable=self.stagevar, foreground='#666666').pack(anchor='w')
-        ttk.Label(outer, text='Original IFC is never overwritten. Material names match exactly (case-insensitive).',
+        ttk.Label(outer, text='Original IFC is never overwritten. Material names match exactly (case-sensitive).',
                   foreground='#666666').pack(anchor='w', pady=(17, 0))
 
     def _input_changed(self, *_):
         # Works for Browse and manual edits; leave active worker progress intact.
+        self._invalidate_material_scan()
         if not self._busy():
             self._reset_status()
+
+    def _scan_settings_changed(self, *_):
+        # Counts can change when aggregate/nest inheritance mode changes.
+        self._invalidate_material_scan()
+
+    def _invalidate_material_scan(self):
+        self.material_scan_result = None
+        self.material_scan_fingerprint = None
+        win = self.material_scan_window
+        if win is not None and win.winfo_exists():
+            win.destroy()
+        self.material_scan_window = None
+
+    def _source_fingerprint(self, src):
+        path = Path(src).resolve()
+        stat = path.stat()
+        return (str(path), stat.st_size, stat.st_mtime_ns, self.parentvar.get())
 
     def _reset_status(self):
         self.progress.stop()
@@ -260,6 +285,157 @@ class FilterApp(tk.Tk):
         self.worker = threading.Thread(target=self._work, args=(opts,), daemon=True)
         self.worker.start()
 
+    def _start_material_scan(self):
+        """Scan explicitly; never reopen a multi-GB source automatically."""
+        if self._busy():
+            messagebox.showwarning('Processing', 'Finish the current operation first.')
+            return
+        src = self.filevar.get().strip()
+        if not src or not Path(src).is_file():
+            messagebox.showerror('Missing source', 'Select a valid input IFC before scanning materials.')
+            return
+        try:
+            fingerprint = self._source_fingerprint(src)
+        except OSError as error:
+            messagebox.showerror('Input IFC', str(error))
+            return
+        if (self.material_scan_result is not None and
+                self.material_scan_fingerprint == fingerprint):
+            self._show_material_scan(self.material_scan_result)
+            return
+        self._begin('Scanning IFC materials...')
+        self._log('Material scan parent mode: ' + self.parentvar.get())
+        self._log('The input IFC is read-only; no output file will be created.')
+        mode = self.parentvar.get()
+        self.worker = threading.Thread(target=self._scan_work,
+                                       args=(src, mode, fingerprint), daemon=True)
+        self.worker.start()
+
+    def _scan_work(self, src, mode, fingerprint):
+        try:
+            from material_inventory import scan_ifc_materials
+            result = scan_ifc_materials(src, parent_mode=mode,
+                                        notify=lambda msg: self.q.put(('log', str(msg))))
+            self.q.put(('scan_done', (fingerprint, result)))
+        except Exception:
+            self.q.put(('error', traceback.format_exc()))
+
+    def _show_material_scan(self, result):
+        """Read-only inventory; selected exact names replace the main filter field."""
+        if self.material_scan_window is not None and self.material_scan_window.winfo_exists():
+            self.material_scan_window.lift()
+            return
+        win = tk.Toplevel(self)
+        self.material_scan_window = win
+        win.title('IFC material inventory — select exact names')
+        win.geometry('900x530')
+        win.minsize(680, 385)
+        panel = ttk.Frame(win, padding=16)
+        panel.pack(fill='both', expand=True)
+        ttk.Label(panel, text='Available IFC materials',
+                  font=('Segoe UI', 13, 'bold')).pack(anchor='w')
+        ttk.Label(panel, text=(f'{len(result["materials"])} distinct material names, '
+              f'{result["elements_scanned"]:,} physical elements scanned '
+              f'({result["schema"]}; parent mode: {result["parent_mode"]})')).pack(anchor='w', pady=(4, 8))
+        ttk.Label(panel, text='Counts show elements selected by each material individually. '
+                  'Multiple material names can match the same element.').pack(anchor='w', pady=(0, 8))
+        search_row = ttk.Frame(panel)
+        search_row.pack(fill='x', pady=(0, 8))
+        ttk.Label(search_row, text='Search (case-insensitive):').pack(side='left', padx=(0, 8))
+        search_var = tk.StringVar()
+        ttk.Entry(search_row, textvariable=search_var).pack(side='left', fill='x', expand=True)
+        table_frame = ttk.Frame(panel)
+        table_frame.pack(fill='both', expand=True)
+        columns = ('name', 'total', 'direct', 'type', 'parent')
+        table = ttk.Treeview(table_frame, columns=columns, show='headings', selectmode='extended')
+        headings = [('name', 'Exact material name', 350),
+                    ('total', 'Matching elements', 140),
+                    ('direct', 'Direct', 75), ('type', 'Type', 75), ('parent', 'Parent', 75)]
+        for key, heading, width in headings:
+            table.heading(key, text=heading)
+            table.column(key, width=width, minwidth=65, anchor='w' if key == 'name' else 'e')
+        scroll = ttk.Scrollbar(table_frame, orient='vertical', command=table.yview)
+        table.configure(yscrollcommand=scroll.set)
+        table.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        by_id = {}
+        available_names = {entry['name'] for entry in result['materials']}
+        chosen_names = set(parse_materials(self.materials.get('1.0', 'end'))) & available_names
+        selected_count = tk.StringVar(value=f'{len(chosen_names)} selected')
+        refreshing = False
+        visible_names = set()
+
+        def refresh(*_):
+            nonlocal refreshing, visible_names
+            refreshing = True
+            table.delete(*table.get_children())
+            by_id.clear()
+            visible_names = set()
+            phrase = search_var.get().casefold().strip()
+            for idx, entry in enumerate(result['materials']):
+                name = entry['name']
+                if phrase and phrase not in name.casefold():
+                    continue
+                iid = f'mat{idx}'
+                by_id[iid] = name
+                visible_names.add(name)
+                table.insert('', 'end', iid=iid, values=(name, entry['matching_elements'],
+                            entry['direct'], entry['type'], entry['parent']))
+            table.selection_set(*[iid for iid, name in by_id.items() if name in chosen_names])
+            selected_count.set(f'{len(chosen_names)} selected')
+            refreshing = False
+
+        def selection_changed(*_):
+            if refreshing:
+                return
+            chosen_names.difference_update(visible_names)
+            chosen_names.update(by_id[iid] for iid in table.selection() if iid in by_id)
+            selected_count.set(f'{len(chosen_names)} selected')
+
+        def select_visible():
+            chosen_names.update(visible_names)
+            refresh()
+
+        def clear_all():
+            chosen_names.clear()
+            refresh()
+
+        def apply_selection():
+            if not chosen_names:
+                messagebox.showwarning('No materials selected', 'Select at least one material name.', parent=win)
+                return
+            try:
+                current_fingerprint = self._source_fingerprint(self.filevar.get().strip())
+            except OSError:
+                current_fingerprint = None
+            if current_fingerprint != self.material_scan_fingerprint:
+                messagebox.showerror('Material scan outdated', 'The input IFC or parent mode changed. Scan again.', parent=win)
+                return
+            if self._busy():
+                messagebox.showwarning('Processing', 'Finish the current operation first.', parent=win)
+                return
+            # Preserve inventory list ordering rather than arbitrary set order.
+            names = [entry['name'] for entry in result['materials'] if entry['name'] in chosen_names]
+            self.materials.delete('1.0', 'end')
+            self.materials.insert('1.0', '\n'.join(names))
+            self._log(f'Inserted {len(names)} exact material name(s) from the IFC inventory.')
+            win.destroy()
+
+        table.bind('<<TreeviewSelect>>', selection_changed)
+        search_var.trace_add('write', refresh)
+        refresh()
+        controls = ttk.Frame(panel)
+        controls.pack(fill='x', pady=(12, 0))
+        ttk.Label(controls, textvariable=selected_count).pack(side='left')
+        ttk.Button(controls, text='Select visible', command=select_visible).pack(side='left', padx=(12, 4))
+        ttk.Button(controls, text='Clear', command=clear_all).pack(side='left')
+        ttk.Button(controls, text='Close', command=win.destroy).pack(side='right')
+        ttk.Button(controls, text='Use selected materials', command=apply_selection).pack(side='right', padx=(0, 10))
+        ttk.Label(panel, text='Selecting materials only fills the main filter field. '
+                  'It does not start filtering or save any reports.',
+                  foreground='#666666').pack(anchor='w', pady=(12, 0))
+        win.transient(self)
+
     def _start_verify(self):
         self._begin_verification('geometry')
 
@@ -314,6 +490,20 @@ class FilterApp(tk.Tk):
                 if kind == 'log':
                     self._log(str(data))
                     self.stagevar.set(str(data)[:115])
+                elif kind == 'scan_done':
+                    fingerprint, result = data
+                    self._finish('Material scan completed.')
+                    try:
+                        is_current = self._source_fingerprint(self.filevar.get().strip()) == fingerprint
+                    except OSError:
+                        is_current = False
+                    if not is_current:
+                        self._log('Material scan results were discarded: source IFC or parent mode changed.')
+                        messagebox.showwarning('Material scan outdated', 'The source IFC or parent mode changed. Please scan again.')
+                    else:
+                        self.material_scan_fingerprint = fingerprint
+                        self.material_scan_result = result
+                        self._show_material_scan(result)
                 elif kind == 'done':
                     audit_only = data.get('dry_run', False)
                     self._finish('Audit completed — no IFC exported.' if audit_only else
