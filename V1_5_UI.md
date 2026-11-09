@@ -32,3 +32,8 @@ The Filter IFC button is centered and bold rather than full width. Selecting a n
 ## C2 review clarification
 
 The UI recommendation is intentional: Batch Cleanup remains the default. Standard validation checks structural output requirements but does **not** perform complete schema attribute/cardinality validation. For unfamiliar or critical IFC files, use Full validation and/or optional geometry and material comparisons. No filter behavior changed in this documentation-only update.
+
+
+## v1.5.4 Phase 1B
+
+No change to the UI controls, output-file defaults or manually triggered GitHub workflow. Structural integrity checks fail safely if reparented placements or support-shell representations are invalid.

@@ -24,7 +24,7 @@ def capture_world_placements(model, elements):
             for element in elements if getattr(element, 'ObjectPlacement', None) is not None]
 
 
-def repair_reparented_placements(model, snapshots, tolerance=1e-7):
+def repair_reparented_placements(model, snapshots, tolerance=1e-7, parents=None):
     """Use documented API to rebuild placement against the new container.
 
     Fail if the global position changes; never silently accept movement.
@@ -33,6 +33,7 @@ def repair_reparented_placements(model, snapshots, tolerance=1e-7):
     import numpy as np
     import ifcopenshell.api.geometry
     changed = 0
+    parents = parents or {}
     for element, old in snapshots:
         if not element.is_a('IfcProduct'):
             raise ValueError('Only product placements can be repaired')
@@ -42,5 +43,18 @@ def repair_reparented_placements(model, snapshots, tolerance=1e-7):
         current = _world_placement_si(model, element.ObjectPlacement)
         if not np.allclose(old, current, rtol=0, atol=tolerance):
             raise RuntimeError(f'Placement moved after reassignment: {element.GlobalId}')
+        target = parents.get(element.id())
+        if target is not None:
+            # Spatial membership and ObjectPlacement.PlacementRelTo are distinct.
+            # Editing the world transform alone does not prove reparenting.
+            parent_placement = getattr(target, 'ObjectPlacement', None)
+            placement = getattr(element, 'ObjectPlacement', None)
+            # Storeys without a placement are legal: the element's new local
+            # placement must then be absolute (PlacementRelTo=None).
+            if placement is None or placement.PlacementRelTo != parent_placement:
+                raise RuntimeError(
+                    f'Placement parent mismatch for {element.GlobalId}: '
+                    'expected direct relative placement to ancestor storey; '
+                    'export safely aborted.')
         changed += 1
     return changed

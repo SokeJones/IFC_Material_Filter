@@ -86,41 +86,90 @@ def _space_ancestor_storey(space):
 
 
 def remove_unselected_spaces(model, notify=print):
-    """Discard material-unselected IfcSpace objects, keeping retained contents located.
+    """Remove spaces after planning *all* spatial moves against the intact graph.
 
-    Selected elements spatially contained in a space are reattached to the
-    actual ancestor storey; a missing storey aborts rather than inventing one.
-    Space boundaries/room metadata are intentionally discarded.
+    Discover every storey ancestor before deleting any IfcRelAggregates. In a
+    nested space hierarchy, deleting a parent first otherwise makes its child's
+    ancestor undiscoverable. The move plan is fail-closed: a missing ancestor
+    prevents any space removal.
     """
     spaces = list(model.by_type('IfcSpace'))
-    moved = 0
-    repaired = 0
+    if not spaces:
+        return 0, 0
+    # Plan before mutations. A child may contain retained products even when
+    # its ancestor space appears first in STEP entity order.
+    moves = []
     for space in spaces:
         containing = [r for r in model.get_inverse(space)
                       if r.is_a('IfcRelContainedInSpatialStructure')
                       and getattr(r, 'RelatingStructure', None) == space]
-        if containing:
-            storey = _space_ancestor_storey(space)
-            if storey is None:
-                raise RuntimeError(
-                    f'Cannot remove IfcSpace {space.GlobalId}: contains elements '
-                    'but has no ancestor IfcBuildingStorey. Export safely aborted.')
-            from placement_repair import capture_world_placements, repair_reparented_placements
-            # Capture the actual global placement *before* the space is removed.
-            # Merely changing containment retains possibly invalid PlacementRelTo
-            # references to the discarded space's IfcLocalPlacement.
-            affected = {e.id(): e for rel in containing for e in rel.RelatedElements}
-            snapshots = capture_world_placements(model, affected.values())
-            for rel in containing:
-                rel.RelatingStructure = storey
-                moved += len(rel.RelatedElements)
-            repaired += repair_reparented_placements(model, snapshots)
+        if not containing:
+            continue
+        storey = _space_ancestor_storey(space)
+        if storey is None:
+            raise RuntimeError(
+                f'Cannot remove IfcSpace {space.GlobalId}: contains elements '
+                'but has no ancestor IfcBuildingStorey. Export safely aborted.')
+        moves.append((containing, storey))
+
+    from placement_repair import capture_world_placements, repair_reparented_placements
+    # Capture all placements before the first relationship is changed.
+    affected = {}
+    for relations, storey in moves:
+        for rel in relations:
+            for element in rel.RelatedElements:
+                key = element.id()
+                existing = affected.get(key)
+                if existing is not None and existing.id() != storey.id():
+                    raise RuntimeError(f'Conflicting spatial containers for #{key}')
+                affected[key] = storey
+    elements = {element.id(): element for relations, _ in moves
+                for rel in relations for element in rel.RelatedElements}
+    snapshots = capture_world_placements(model, elements.values())
+    moved = 0
+    for relations, storey in moves:
+        for rel in relations:
+            rel.RelatingStructure = storey
+            moved += len(rel.RelatedElements)
+    # Verify the actual placement parent is now the storey, not a removed
+    # space. edit_object_placement guarantees world-space preservation, but
+    # a placement-parent assertion is needed to detect a no-op reparent.
+    repaired = repair_reparented_placements(model, snapshots, parents=affected)
+    for space in spaces:
         detach_and_remove_product(model, space)
-    if spaces:
-        notify(f'Discarded {len(spaces):,} unselected IfcSpace objects; '
-               f'reparented {moved:,} spatially contained element references; '
-               f'rebuilt {repaired:,} placement(s)')
+    notify(f'Discarded {len(spaces):,} unselected IfcSpace objects; '
+           f'reparented {moved:,} spatially contained element references; '
+           f'rebuilt {repaired:,} placement(s)')
     return len(spaces), moved
+
+
+def assert_support_shells_geometry_free(model, selected_guids, support_guids):
+    """A retained nonselected aggregate shell must not expose its own shape.
+
+    Openings are separate support objects, and may legitimately carry a
+    representation. This check is deliberately limited to non-opening shells.
+    """
+    shell_ids = set(support_guids) - set(selected_guids)
+    violations = []
+    for element in model.by_type('IfcElement'):
+        if element.GlobalId not in shell_ids or element.is_a('IfcOpeningElement'):
+            continue
+        if getattr(element, 'Representation', None) is not None:
+            violations.append(element.GlobalId)
+            continue
+        # A type can also provide mapped geometry to an occurrence that lacks
+        # its own Representation. Do not silently publish such a support shell.
+        type_relations = list(getattr(element, 'IsTypedBy', ()) or ())
+        type_relations.extend(rel for rel in (getattr(element, 'IsDefinedBy', ()) or ())
+                              if rel.is_a('IfcRelDefinesByType'))
+        if any(getattr(getattr(rel, 'RelatingType', None), 'RepresentationMaps', None)
+               for rel in type_relations):
+            violations.append(element.GlobalId)
+    if violations:
+        raise RuntimeError(
+            f'{len(violations)} retained support shell(s) still have geometry; '
+            f'e.g. {violations[:3]}. Export safely aborted.')
+    return len(shell_ids)
 
 
 def _geometry_roots_of_retained(model, keep_guids):
@@ -279,6 +328,8 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
                     obj.Representation = None
                     cleared += 1
         if timings: timings.count('batch_assembly_representations_cleared', cleared)
+        checked_shells = assert_support_shells_geometry_free(model, retained_guids, support_guids)
+        if timings: timings.count('batch_support_shells_checked', checked_shells)
     with timed('B03a Remove non-matching spaces / preserve containment'):
         removed_spaces, moved_contents = remove_unselected_spaces(model, notify)
         if timings:
@@ -387,6 +438,8 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
             report = validate_extraction(reopened, model.schema, expected_ids | opening_ids, opening_ids)
+            # Reject any shell geometry that might have survived serialization.
+            assert_support_shells_geometry_free(reopened, expected_ids, opening_ids)
             lost = source_represented & set(report['selected_without_representation'])
             if lost:
                 raise RuntimeError(f'{len(lost)} retained elements lost representations; e.g. {sorted(lost)[0]}')

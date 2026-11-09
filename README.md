@@ -106,7 +106,7 @@ output against the reference, including visual geometry/placement verification.
 
 ## Historical development notes (v1.4.x)
 
-The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.3 default.
+The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.4 default.
 
 ### v1.4.2 diagnostic update
 
@@ -280,6 +280,18 @@ CLI behavior remains backward compatible; `--no-audit --no-reports` disables rou
 - **Batch Cleanup remains the default export engine** and is labeled recommended in the UI. No algorithmic or UI-default changes were made in this documentation update.
 - **Standard** remains the default validation level; it does not run complete schema validation. **Full** and independent geometry/material verification remain optional.
 - Historical experimental cautions are preserved as development history, not current guidance. Previous project benchmark passes support the default for the tested models, but do not imply exhaustive coverage of IFC2x3/IFC4/IFC4X3 or unknown exporters.
+
+## v1.5.4 Phase 1B — spatial integrity and support-shell checks
+
+Phase 1B updates only the Batch Cleanup structural cleanup and its checks:
+
+- **M3 (nested IfcSpace removal):** resolve ancestor storeys and capture retained product placements for *all* discarded spaces before any space or decomposition relationship is removed. A missing ancestor aborts before space removal. This eliminates file-order dependence for parent/child spaces.
+- **M4 (placement parent):** after reparenting spatial containment, verify both the original global transform and `IfcLocalPlacement.PlacementRelTo` against the actual ancestor storey's placement (or an absolute placement if that storey has none). A mismatch fails closed rather than producing a misleading successful IFC. The already-used documented IfcOpenShell placement-editing operation is retained; placement semantics for the two production reference IFCs still require regression testing.
+- **m8 (support shells):** after representations are cleared, and again after reopening the export, reject non-selected aggregate shells that retain their own `Representation` or type-provided `RepresentationMaps`. Intentionally retained openings are exempt from this shell-only rule.
+
+**Limitations:** This release does not yet clean up unused type declarations (M1) or alter how type representations are retained. If an aggregate shell is represented by its type, the exporter now **aborts** instead of silently exporting potentially unwanted geometry. A future M1 review should determine whether safe removal of those type-geometry links is appropriate.
+
+**Release gate:** Tests under `tests/test_phase1b_v154.py` include a nested-space synthetic IFC (requiring IfcOpenShell), plus shell invariant tests. Run the manually triggered GitHub Actions Windows workflow and verify the 40 MB and 360 MB reference models, including world-space geometry and material comparison. Do not treat local skipped integration tests as passing the Windows integration stage.
 
 ## v1.5.3 Phase 1A (input safety and reliability)
 
