@@ -224,6 +224,53 @@ def restrict_presentation_layers(model, keep_guids, notify=print):
            f'{removed_items:,} discarded assignments, {kept_items:,} retained assignments')
     return changed, removed_items, kept_items
 
+def prune_unused_type_declarations(model, notify=print):
+    """M1: remove unused *product type* entries from IFC4+ project declarations.
+
+    IFC4 IfcRelDeclares can root an entire otherwise-unused type's
+    RepresentationMaps and material associations. Never strip other declared
+    definitions (property templates, schedules, etc.). A product type is
+    considered used if a surviving IfcRelDefinesByType refers to it; these
+    relationships were already repaired when rejected elements were removed.
+    Other paths to a type, if any, are handled conservatively by reachability.
+    """
+    if str(getattr(model, 'schema', '')).upper().startswith('IFC2X3'):
+        return 0, 0  # IfcRelDeclares was introduced in IFC4.
+    used_type_ids = {
+        rel.RelatingType.id()
+        for rel in model.by_type('IfcRelDefinesByType')
+        if getattr(rel, 'RelatingType', None) is not None
+        and bool(getattr(rel, 'RelatedObjects', ()) or ())
+    }
+    removed_entries = removed_relations = 0
+    for rel in list(model.by_type('IfcRelDeclares')):
+        definitions = tuple(rel.RelatedDefinitions or ())
+        retained = tuple(definition for definition in definitions
+                         if not (definition.is_a('IfcTypeProduct')
+                                 and definition.id() not in used_type_ids))
+        removed_entries += len(definitions) - len(retained)
+        if len(definitions) == len(retained):
+            continue
+        if retained:
+            rel.RelatedDefinitions = retained
+        else:
+            model.remove(rel)
+            removed_relations += 1
+    if removed_entries:
+        notify(f'Unused IFC type declarations: {removed_entries:,} removed; '
+               f'{removed_relations:,} empty declaration relationships removed')
+    return removed_entries, removed_relations
+
+
+def retained_context_product_counts(model):
+    """M6 diagnostics: non-element products are context, not material matches."""
+    classes = Counter(
+        p.is_a() for p in model.by_type('IfcProduct')
+        if not p.is_a('IfcElement') and not p.is_a('IfcSpatialStructureElement')
+    )
+    return dict(sorted(classes.items()))
+
+
 def live_roots(model, keep_guids):
     """Select primary roots; relationships resolved by inverse-aware traversal."""
     roots = []
@@ -238,7 +285,8 @@ def reachable_ids(roots, model=None, diagnostics=None, notify=None):
     """Preserve v1.4.3 reachability semantics, optionally record bounded diagnostics.
 
     A diagnostic edge records how an object was FIRST discovered, not all
-    the possible paths to it. No material/resource inverse traversal is added.
+    the possible paths to it. Narrow material-property/shape-aspect inverse
+    traversal preserves metadata attached to retained definitions.
     """
     seen = set()
     tracing = diagnostics is not None and diagnostics.enabled
@@ -281,7 +329,17 @@ def reachable_ids(roots, model=None, diagnostics=None, notify=None):
                 allowed_inverse = ('IfcStyledItem', 'IfcPresentationLayerAssignment',
                                    'IfcPresentationLayerWithStyle')
             elif obj.is_a('IfcMaterial'):
-                allowed_inverse = ('IfcMaterialDefinitionRepresentation',)
+                # IFC2X3 material property subtypes and material styles; IFC4
+                # material properties are also attached inversely.
+                allowed_inverse = ('IfcMaterialDefinitionRepresentation',
+                                   'IfcMaterialProperties')
+            elif obj.is_a().startswith('IfcMaterial'):
+                # IFC4/IFC4X3: properties can be attached to layers, sets,
+                # constituents and profiles, not just individual materials.
+                allowed_inverse = ('IfcMaterialProperties',)
+            elif obj.is_a('IfcProductDefinitionShape') or obj.is_a('IfcRepresentationMap'):
+                # ShapeAspects are inverse-linked to the owner of the shape.
+                allowed_inverse = ('IfcShapeAspect',)
             else:
                 allowed_inverse = ()
             if allowed_inverse:
@@ -335,6 +393,11 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
         if timings:
             timings.count('batch_spaces_removed', removed_spaces)
             timings.count('batch_space_contents_reparented', moved_contents)
+    with timed('B03a1 Remove unused IFC4+ product type declarations'):
+        unused_type_declarations, empty_type_relations = prune_unused_type_declarations(model, notify)
+        if timings:
+            timings.count('batch_unused_product_type_declarations_removed', unused_type_declarations)
+            timings.count('batch_empty_declaration_relationships_removed', empty_type_relations)
     with timed('B03b Clip presentation layers to surviving geometry'):
         layers_changed, assignments_dropped, assignments_kept = restrict_presentation_layers(
             model, desired, notify)
@@ -363,7 +426,8 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
             'remaining_elements': len(model.by_type('IfcElement')),
             'removed_spaces': removed_spaces,
             'reparented_spatial_contents': moved_contents,
-            'layer_assignments_removed': assignments_dropped}
+            'layer_assignments_removed': assignments_dropped,
+            'unused_type_declarations_removed': unused_type_declarations}
 
 
 def export_batch(model, output_path: Path, expected_ids, opening_ids, source_represented,
@@ -438,6 +502,9 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
             report = validate_extraction(reopened, model.schema, expected_ids | opening_ids, opening_ids)
+            # Context products may be retained through spatial relationships;
+            # disclose them without imposing IfcPatch structural equivalence.
+            report['retained_non_element_products'] = retained_context_product_counts(reopened)
             # Reject any shell geometry that might have survived serialization.
             assert_support_shells_geometry_free(reopened, expected_ids, opening_ids)
             lost = source_represented & set(report['selected_without_representation'])

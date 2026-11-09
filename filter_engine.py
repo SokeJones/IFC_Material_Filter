@@ -291,6 +291,18 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
             # Retain openings but never count them as selected physical-material elements.
             keep_ids = selected | shells | opening_ids
 
+        # M5: The optional audit must describe the final retained IFC elements,
+        # not just the material-selection stage. A support shell/opening is
+        # retained even if it would not independently match the materials.
+        # Keep the original selection counts and KEEP-only expected_ids intact.
+        row_by_guid = {row['global_id']: row for row in rows}
+        for eid in shells - selected:
+            row = row_by_guid[elem_by_id[eid].GlobalId]
+            row['decision'], row['reason'] = 'KEEP_SUPPORT', 'support_shell'
+        for eid in opening_ids - selected:
+            row = row_by_guid[elem_by_id[eid].GlobalId]
+            row['decision'], row['reason'] = 'KEEP_SUPPORT', 'support_opening'
+
         if save_audit or dry_run:
             with perf.stage('06 Write audit CSV'):
                 audit.parent.mkdir(parents=True, exist_ok=True)
@@ -365,7 +377,7 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                     target_path.with_suffix('.timing.csv') if save_reports else None)
         # Write even on partial failure to keep successful reference output usable.
         comparison = {
-            'application_version': '1.4.6', 'engine_mode': engine,
+            'application_version': '1.5.5', 'engine_mode': engine,
             'validation_mode': validation, 'input': str(src),
             'materials': wanted_names, 'parent_mode': parent_mode,
             'selected_elements': len(expected_ids), 'support_shells': len(support_shells),

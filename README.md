@@ -1,4 +1,4 @@
-# IFC Material Filter v1.5 — Simplified Windows interface
+# IFC Material Filter v1.5.5 — Phase 2 semantic preservation
 
 **Status:** GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
@@ -32,7 +32,7 @@ The default **Batch Cleanup** (`batch`) engine writes the requested filtered IFC
 1. Reopen a **separate** IFC instance for the batch engine; do not modify the reference model.
 2. Invert the shared material selection and remove rejected products with v1.1's relationship-safe routine; do not recursively delete shared property sets.
 3. Clear representations of retained non-selected assembly shells.
-4. Traverse the remaining project's, spatial objects' and selected elements' forward references, plus inverse IFC relationships attached to live objects and types. **Do not** traverse inverse relationships from shared material nodes.
+4. Remove IFC4+ declarations for unused product types, without removing non-type definitions. Traverse the remaining project, spatial structure and retained elements via forward references and selected inverse relationships. Retain material properties and shape aspects attached to live material and shape definitions. These targeted inverse links are not a general traversal into excluded geometry.
 5. Serialize the edited IFC to a temporary STEP file, then stream only reachable STEP entity records to a second temporary IFC. Unused geometry and other resources are dropped without calling `model.remove()` millions of times.
 6. Reopen the pruned IFC and check required GlobalIDs and representation references before publishing. Full schema validation is performed only when **Full** is selected.
 
@@ -60,6 +60,18 @@ The 40 MB and 360 MB reference-model benchmarks support using Batch Cleanup as t
 ```powershell
 python cli.py original.ifc filtered.ifc --material "Stahlbeton Schweiz" --material "Beton C30/37" --engine both --validation full
 ```
+
+## Phase 2 — v1.5.5 semantic preservation (M1, M2, M5, M6, M9)
+
+- **M1 — Unused product types:** In IFC4/IFC4X3, `IfcRelDeclares` entries for `IfcTypeProduct` definitions with no surviving `IfcRelDefinesByType` occurrence are removed before reachability. Mixed declarations preserve all non-product-type definitions. IFC2X3 does not define `IfcRelDeclares` and bypasses this pass. Types reachable through other retained relationships may still survive; this is deliberate conservative behavior.
+- **M2 — Material and shape metadata:** Narrow inverse traversal retains `IfcMaterialProperties` (including IFC2X3 `IfcExtendedMaterialProperties`) attached to reachable material definitions, and `IfcShapeAspect` attached to retained product definition shapes and representation maps. The existing material verifier checks *effective material assignments*, not every inverse-linked property; new integration cases check the extra metadata explicitly.
+- **M5 — Audit CSV:** When enabled, the optional audit now marks retained non-selected aggregate parent shells as `KEEP_SUPPORT / support_shell` and retained openings as `KEEP_SUPPORT / support_opening`. The `KEEP` category and selection totals still mean independently material-selected elements. The default remains **IFC output only**.
+- **M6 — Retention policy:** `IfcProject` and all non-space spatial containers are retained (even if empty). `IfcSpace` objects are removed, with contained retained products moved to an ancestor storey and their global transforms preserved. Non-`IfcElement` products such as grids, annotations and ports are not material-selected; they may survive only if reachable through retained graph context. Their classes/counts are reported in the engine's internal validation summary. We intentionally do not make Batch Cleanup structurally identical to the optional IfcPatch engine.
+- **M9 — Tests:** Synthetic IFC2X3, IFC4 and IFC4X3 integration tests cover type-inherited material selection, direct-material overrides, unused type declarations, material properties, shape aspects and end-to-end Batch export. They run on the GitHub Windows runner with IfcOpenShell installed. The real Windows executable smoke test remains enabled.
+
+**Validation boundary:** The 40 MB and 360 MB reference models are IFC2X3 and are not sufficient to validate new IFC4/IFC4X3 type-declaration behavior. v1.5.5 is a *test candidate* until the Windows integration suite and reference-model regression checks pass. Optional Full schema validation, geometry comparison and material comparison remain recommended for new IFC sources.
+
+**Build:** `.github/workflows/build-windows.yml` remains **manual `workflow_dispatch` only**. No build starts on push.
 
 ## Benchmark and release status
 
@@ -106,7 +118,7 @@ output against the reference, including visual geometry/placement verification.
 
 ## Historical development notes (v1.4.x)
 
-The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.4 default.
+The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.5 default.
 
 ### v1.4.2 diagnostic update
 

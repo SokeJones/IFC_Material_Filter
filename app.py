@@ -1,4 +1,4 @@
-"""IFC Material Filter v1.5.4.1: Phase 1B structural integrity.
+"""IFC Material Filter v1.5.5: Phase 2 semantic integrity.
 
 Keep engine logic in filter_engine unchanged. The GUI only dispatches to it.
 """
@@ -17,7 +17,7 @@ from filter_engine import export_ifc, parse_materials
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.5.4.1')
+        self.title('IFC Material Filter v1.5.5')
         self.geometry('760x620')
         self.minsize(620, 570)
         self.q = queue.Queue()
