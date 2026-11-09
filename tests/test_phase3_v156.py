@@ -23,7 +23,7 @@ from version import __version__
 class Phase3Tests(unittest.TestCase):
     def test_m1_cli_lists_split_using_gui_rules(self):
         self.assertEqual(parse_materials([' Concrete;Steel ', 'Brick\nCONCRETE', ' Insulation ; steel']),
-                         ['Concrete', 'Steel', 'Brick', 'Insulation'])
+                         ['Concrete', 'Steel', 'Brick', 'CONCRETE', 'Insulation', 'steel'])
 
     def test_public_api_defaults_match_gui_one_ifc_output(self):
         params = inspect.signature(export_ifc).parameters
@@ -66,7 +66,7 @@ class Phase3Tests(unittest.TestCase):
             cli.main(['source.ifc','--material','Concrete'])
 
     def test_m2_version_centralized(self):
-        self.assertEqual(__version__, '1.5.6.1')
+        self.assertEqual(__version__, '1.6.1')
         engine = (ROOT / 'filter_engine.py').read_text(encoding='utf-8')
         app = (ROOT / 'app.py').read_text(encoding='utf-8')
         self.assertIn("'application_version': __version__", engine)

@@ -31,11 +31,11 @@ class InputSafetyTests(unittest.TestCase):
         self.assertEqual(unmatched, ['Steel'])
         self.assertIn('Steel', log[0])
 
-    def test_case_insensitive_name_match(self):
+    def test_case_sensitive_name_match(self):
         log = []
         self.assertEqual(assess_selection({1},[{'matched_materials':'Concrete'}],
-                                          ['CONCRETE'],[],log.append), [])
-        self.assertFalse(log)
+                                          ['CONCRETE'],['Concrete'],log.append), ['CONCRETE'])
+        self.assertIn('Concrete', log[0])
 
     def test_sampler_explicit_stop_is_idempotent(self):
         perf = PerformanceLog(lambda message: None)

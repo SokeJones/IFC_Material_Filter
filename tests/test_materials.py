@@ -15,10 +15,11 @@ class FakeEntity:
 class TestMaterialSelection(unittest.TestCase):
     def test_multiple_names_and_dedupe(self):
         self.assertEqual(parse_materials('  Stahlbeton Schweiz;Beton C30/37\nSTAHLBETON SCHWEIZ'),
-                         ['Stahlbeton Schweiz', 'Beton C30/37'])
-    def test_exact_matching_case_insensitive(self):
+                         ['Stahlbeton Schweiz', 'Beton C30/37', 'STAHLBETON SCHWEIZ'])
+    def test_exact_matching_case_sensitive(self):
         a = FakeEntity(1, 'IfcMaterial', 'Stahlbeton Schweiz')
-        self.assertEqual(find_matching_materials([a], {'stahlbeton schweiz'}), {'Stahlbeton Schweiz'})
+        self.assertEqual(find_matching_materials([a], {'Stahlbeton Schweiz'}), {'Stahlbeton Schweiz'})
+        self.assertFalse(find_matching_materials([a], {'stahlbeton schweiz'}))
         self.assertFalse(find_matching_materials([a], {'stahlbeton'}))
     def test_composite_material_or(self):
         m1 = FakeEntity(1, 'IfcMaterial', 'Stahlbeton Schweiz')
@@ -26,8 +27,8 @@ class TestMaterialSelection(unittest.TestCase):
         layer1 = FakeEntity(3, 'IfcMaterialLayer', fields=(m1, 0.4))
         layer2 = FakeEntity(4, 'IfcMaterialLayer', fields=(m2, 0.01))
         layers = FakeEntity(5, 'IfcMaterialLayerSet', fields=((layer1, layer2),))
-        self.assertEqual(find_matching_materials([layers], {'abdichtung'}), {'Abdichtung'})
-        self.assertEqual(find_matching_materials([layers], {'abdichtung','stahlbeton schweiz'}), {'Abdichtung','Stahlbeton Schweiz'})
+        self.assertEqual(find_matching_materials([layers], {'Abdichtung'}), {'Abdichtung'})
+        self.assertEqual(find_matching_materials([layers], {'Abdichtung','Stahlbeton Schweiz'}), {'Abdichtung','Stahlbeton Schweiz'})
     def test_cycle(self):
         obj = FakeEntity(4,'IfcMaterialLayerSet')
         obj.fields = (obj,)

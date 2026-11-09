@@ -29,7 +29,7 @@ class PerformanceTests(unittest.TestCase):
 
     def test_material_lists_preserve_existing_or_semantics(self):
         self.assertEqual(parse_materials('Stahlbeton Schweiz;Beton C30/37\nSTAHLBETON SCHWEIZ'),
-                         ['Stahlbeton Schweiz', 'Beton C30/37'])
+                         ['Stahlbeton Schweiz', 'Beton C30/37', 'STAHLBETON SCHWEIZ'])
 
 
 if __name__ == '__main__':
