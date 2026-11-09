@@ -1,6 +1,6 @@
-# IFC Material Filter v1.5.6 — Phase 3 maintenance and usability
+# IFC Material Filter v1.5.6.1 — Phase 3 integration-test hotfix
 
-**Status:** v1.5.6 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
+**Status:** v1.5.6.1 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
 ## Everyday workflow
 
@@ -73,7 +73,7 @@ python cli.py original.ifc --material "Concrete" --dry-run
 - Optional timing now uses separate `*.selection.timing.csv` and `*.timing.csv` files, with distinct `*.metrics.csv` companions. Selection and engine timing are no longer overwritten.
 - Audit-only saves an audit CSV and shows a correct status; an output IFC filename is not required.
 - Geometry verification compares placement matrices numerically, with requested project-unit tolerance for **translations** and an independent dimensionless orientation tolerance (`1e-8`); the world-space tessellation hash method remains otherwise unchanged.
-- The unreachable-entity diagnostic counter now uses the model's length where available, with a conservative iterator fallback. Export/pruning semantics are unchanged. A real-IFC integration test guards entity-count behavior.
+- The unreachable-entity diagnostic counter uses a length-based fast path **only when the model supports `len()`**. IfcOpenShell 0.8.5's `file` objects do not; the original iterator-based count is retained. v1.5.6.1 fixes the GitHub integration test to verify actual counts instead of assuming `len(model)`. This is not a runtime optimization for the pinned IfcOpenShell version. Export/pruning semantics are unchanged.
 - The material entry field starts empty; all prior hints and Advanced Options are preserved.
 - Performance findings m10/m12 were reviewed using the measured reference-model timings. Both relationship removal and reachability behavior are **unchanged**, pending targeted scaling evidence. See `PHASE_3_V156.md`.
 
@@ -134,7 +134,7 @@ output against the reference, including visual geometry/placement verification.
 
 ## Historical development notes (v1.4.x)
 
-The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.6 default.
+The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.6.1 default.
 
 ### v1.4.2 diagnostic update
 

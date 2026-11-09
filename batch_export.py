@@ -359,10 +359,12 @@ def reachable_ids(roots, model=None, diagnostics=None, notify=None):
 
 
 def count_unreachable_entities(model, reachable: set[int]) -> int:
-    """Count unused STEP entities without iterating when file length is available.
+    """Count unreachable serialized entities (diagnostic only).
 
-    Fallback supports model interfaces without __len__. Diagnostic only:
-    pruning still operates on the original reachable STEP ID set.
+    An optional length fast path is valid only for compatible model interfaces.
+    IfcOpenShell 0.8.5 file objects do not implement __len__; they use the
+    historical iterator-based count. STEP pruning uses the original reachable
+    STEP ID set and is unaffected by this diagnostic count.
     """
     try:
         total = len(model)
@@ -430,9 +432,8 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
             timings.count('batch_live_roots', len(roots))
             timings.count('batch_reachable_step_entities', len(reachable))
     with timed('B05 Count unreachable resources'):
-        # IfcOpenShell file length represents its STEP entity count. Avoid
-        # constructing millions of entity wrappers for this metric.
-        # The STEP pruning pass verifies actual serialized IDs separately.
+        # IfcOpenShell 0.8.5 does not provide file.__len__: its diagnostic
+        # count uses the iterator fallback. STEP pruning verifies IDs later.
         unreach_count = count_unreachable_entities(model, reachable)
         if timings: timings.count('batch_orphan_step_entities', unreach_count)
         notify(f'Unreachable STEP records: {unreach_count:,}')
