@@ -57,6 +57,35 @@ class ShellInvariantTests(unittest.TestCase):
 
 @unittest.skipIf(ifcopenshell is None, 'Requires real IfcOpenShell on Windows runner')
 class NestedSpaceIntegration(unittest.TestCase):
+    def test_repair_existing_containment_without_changing_world_coordinates(self):
+        """Real IFC2X3 case: direct containment edit leaves old placement parent."""
+        import numpy as np
+        import ifcopenshell.util.placement
+        from placement_repair import capture_world_placements, repair_reparented_placements
+        f = ifcopenshell.file(schema='IFC2X3')
+        guid = ifcopenshell.guid.new
+        project = f.create_entity('IfcProject', GlobalId=guid())
+        unit = f.create_entity('IfcSIUnit', UnitType='LENGTHUNIT', Name='METRE')
+        project.UnitsInContext = f.create_entity('IfcUnitAssignment', Units=[unit])
+        storey = f.create_entity('IfcBuildingStorey', GlobalId=guid())
+        space = f.create_entity('IfcSpace', GlobalId=guid())
+        column = f.create_entity('IfcColumn', GlobalId=guid())
+        def place(parent, x):
+            p = f.create_entity('IfcCartesianPoint', Coordinates=(float(x), 0., 0.))
+            axis = f.create_entity('IfcAxis2Placement3D', Location=p)
+            return f.create_entity('IfcLocalPlacement', PlacementRelTo=parent,
+                                   RelativePlacement=axis)
+        storey.ObjectPlacement = place(None, 100)
+        space.ObjectPlacement = place(storey.ObjectPlacement, 10)
+        column.ObjectPlacement = place(space.ObjectPlacement, 3)
+        before = ifcopenshell.util.placement.get_local_placement(column.ObjectPlacement)
+        snapshots = capture_world_placements(f, [column])
+        self.assertEqual(repair_reparented_placements(
+            f, snapshots, parents={column.id(): storey}), 1)
+        after = ifcopenshell.util.placement.get_local_placement(column.ObjectPlacement)
+        self.assertEqual(column.ObjectPlacement.PlacementRelTo, storey.ObjectPlacement)
+        self.assertTrue(np.allclose(before, after, rtol=0, atol=1e-7))
+
     def test_parent_space_first_child_space_keeps_storey_and_world_coordinates(self):
         import numpy as np
         import ifcopenshell.util.placement
