@@ -34,3 +34,11 @@ to the ancestor storey. The 360 MB IFC2X3 input demonstrated that calling
 `edit_object_placement` alone may not establish that parent. v1.5.4.1 adds a
 controlled relative-axis placement reconstruction and checks the original
 world transform. See `PLACEMENT_HOTFIX_V1541.md` for test requirements.
+
+## v1.5.4.2 owner-history integration fix
+
+The new IFC2X3 test failed on GitHub Actions because the minimal test IFC
+contained no configured owner user. Production placement repair now uses a
+direct storey-relative `IfcAxis2Placement3D` reconstruction when a target
+parent is specified, avoiding the geometry API owner-history update. Global
+transform and parent are still asserted; real-IFC verification is pending.

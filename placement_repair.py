@@ -1,9 +1,9 @@
 """Conservative placement repair after spatial containment reparenting.
 
-World-space transformations are captured before removing spaces. The supported
-IfcOpenShell geometry API is attempted first; if it keeps the old placement
-parent, explicitly rebuild the relative axis placement against the new storey.
-All updates are checked against the original world-space transformation.
+World-space transformations are captured before removing spaces. When a new
+storey parent is specified, the relative axis placement is rebuilt directly:
+this avoids an IFC2X3 owner-history requirement in the geometry API and makes
+the intended PlacementRelTo explicit. The original global matrix is verified.
 """
 from __future__ import annotations
 
@@ -89,19 +89,24 @@ def repair_reparented_placements(model, snapshots, tolerance=1e-7, parents=None)
     for element, old in snapshots:
         if not element.is_a('IfcProduct'):
             raise ValueError('Only product placements can be repaired')
-        ifcopenshell.api.geometry.edit_object_placement(
-            model, product=element, matrix=old, is_si=True,
-            should_transform_children=False)
         target = parents.get(element.id())
         if target is not None:
+            # A containment change does not update the independent placement
+            # hierarchy. Reconstruct the relative placement directly: the
+            # geometry API may require an IFC2X3 owner user/history and may
+            # retain the previous PlacementRelTo even when it succeeds.
             parent_placement = getattr(target, 'ObjectPlacement', None)
-            placement = getattr(element, 'ObjectPlacement', None)
-            if placement is None or placement.PlacementRelTo != parent_placement:
-                _explicitly_reparent(model, element, old, parent_placement)
+            _explicitly_reparent(model, element, old, parent_placement)
             placement = element.ObjectPlacement
             if placement is None or placement.PlacementRelTo != parent_placement:
                 raise RuntimeError(f'Placement parent mismatch for {element.GlobalId}; '
                                    'export safely aborted.')
+        else:
+            # Preserve the previous behavior for callers not specifying a
+            # new spatial parent; it is not part of the space-removal path.
+            ifcopenshell.api.geometry.edit_object_placement(
+                model, product=element, matrix=old, is_si=True,
+                should_transform_children=False)
         current = _world_placement_si(model, element.ObjectPlacement)
         if not np.allclose(old, current, rtol=0, atol=tolerance):
             raise RuntimeError(f'Placement moved after reassignment: {element.GlobalId}')

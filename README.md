@@ -315,3 +315,23 @@ recomputes its storey-relative placement when necessary, preserves world-space
 coordinates and aborts on unexpected geometry movement. See
 `PLACEMENT_HOTFIX_V1541.md`. This hotfix requires GitHub integration tests and
 reference-model confirmation before acceptance.
+
+
+### v1.5.4.2: IFC2X3 owner-history-independent placement repair
+
+The new Phase 1B IFC2X3 integration test in v1.5.4.1 failed in
+`ifcopenshell.api.geometry.edit_object_placement`: IfcOpenShell attempted to
+update owner history, but the deliberately minimal synthetic IFC had no owner
+user configured. This is an integration-test failure, not a demonstrated
+world-space geometry mismatch.
+
+For elements being moved from spaces to a known ancestor storey, v1.5.4.2
+now directly rebuilds the storey-relative `IfcAxis2Placement3D` and assigns
+`IfcLocalPlacement.PlacementRelTo`. The world transform is checked before and
+after; unsupported or shared product placements fail closed. The legacy
+geometry API remains available only to callers without a supplied target
+parent. No changes were made to element selection or serialization.
+
+**Release gate:** Re-run all GitHub real-IfcOpenShell tests, the frozen EXE
+smoke test, and both reference-model geometry/material checks. Local tests
+without IfcOpenShell skip real integration tests and do not certify this fix.
