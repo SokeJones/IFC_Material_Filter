@@ -26,3 +26,11 @@
 
 ## Scope limits
 M1/M2 semantic metadata cleanup, M5 audit classification and M6 engine parity are deliberately deferred to the subsequent phase.
+
+## v1.5.4.1 placement hotfix (following 360 MB IFC2X3 user report)
+
+v1.5.4 introduced a fail-closed assertion requiring direct placement relative
+to the ancestor storey. The 360 MB IFC2X3 input demonstrated that calling
+`edit_object_placement` alone may not establish that parent. v1.5.4.1 adds a
+controlled relative-axis placement reconstruction and checks the original
+world transform. See `PLACEMENT_HOTFIX_V1541.md` for test requirements.

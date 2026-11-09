@@ -305,3 +305,13 @@ The GitHub Actions workflow is **manual-only** (`workflow_dispatch`). Uploading 
 ### Frozen EXE smoke-test diagnostics (v1.5.3 build correction)
 
 The GitHub Actions workflow uses Python `subprocess.run` to wait for the frozen GUI-subsystem executable. The executable's `--selftest --selftest-report <path>` mode writes a PASS/FAIL diagnostic to `build-logs/frozen-selftest.txt`, which is uploaded with other build logs even if the step fails. This replaces the unreliable PowerShell `$LASTEXITCODE` check after directly launching a `--windowed` executable.
+
+### v1.5.4.1: placement-parent repair (Phase 1B hotfix)
+
+On some IFC2X3 files, changing a retained element's spatial container and
+calling `geometry.edit_object_placement` did not update
+`IfcLocalPlacement.PlacementRelTo` to the desired storey. v1.5.4.1 explicitly
+recomputes its storey-relative placement when necessary, preserves world-space
+coordinates and aborts on unexpected geometry movement. See
+`PLACEMENT_HOTFIX_V1541.md`. This hotfix requires GitHub integration tests and
+reference-model confirmation before acceptance.

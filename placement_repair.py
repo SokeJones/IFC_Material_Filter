@@ -1,17 +1,15 @@
-"""Conservative placement repair using documented IfcOpenShell operations.
+"""Conservative placement repair after spatial containment reparenting.
 
-Rebuild retained products' local placements after spatial reparenting while
-requesting exactly the previous global transform. Do not alter the source IFC.
+World-space transformations are captured before removing spaces. The supported
+IfcOpenShell geometry API is attempted first; if it keeps the old placement
+parent, explicitly rebuild the relative axis placement against the new storey.
+All updates are checked against the original world-space transformation.
 """
 from __future__ import annotations
 
 
 def _world_placement_si(model, placement):
-    """Global transform in metres (supported IfcOpenShell 0.8.5 APIs).
-
-    get_local_placement yields a world matrix in IFC project units; the edit
-    API with is_si=True needs only the translation converted to metres.
-    """
+    """Global transform in metres using IfcOpenShell 0.8.5 APIs."""
     import ifcopenshell.util.placement
     import ifcopenshell.util.unit
     matrix = ifcopenshell.util.placement.get_local_placement(placement).copy()
@@ -24,14 +22,68 @@ def capture_world_placements(model, elements):
             for element in elements if getattr(element, 'ObjectPlacement', None) is not None]
 
 
-def repair_reparented_placements(model, snapshots, tolerance=1e-7, parents=None):
-    """Use documented API to rebuild placement against the new container.
+def _explicitly_reparent(model, element, original_world_si, parent_placement):
+    """Rebuild a local placement relative to parent_placement, preserving world pose.
 
-    Fail if the global position changes; never silently accept movement.
-    Returns the number of updated product placements.
+    IfcLocalPlacement.PlacementRelTo and RelativePlacement are an independent
+    graph from IfcRelContainedInSpatialStructure; editing containment alone
+    does not guarantee the former is updated. Use standard IFC2X3/IFC4
+    IfcAxis2Placement3D and a matrix computed in *project units*.
+    """
+    import numpy as np
+    import ifcopenshell.util.placement
+    import ifcopenshell.util.unit
+
+    placement = element.ObjectPlacement
+    if placement is None or not placement.is_a('IfcLocalPlacement'):
+        raise RuntimeError(f'Unsupported placement while reparenting {element.GlobalId}')
+
+    # A shared placement must not be mutated because this would move objects
+    # that were not part of the reparenting plan.
+    shared = [obj for obj in model.get_inverse(placement)
+              if obj.is_a('IfcProduct') and obj.id() != element.id()
+              and getattr(obj, 'ObjectPlacement', None) == placement]
+    if shared:
+        raise RuntimeError(f'Shared local placement for {element.GlobalId}; '
+                           'cannot safely reparent without affecting other products.')
+
+    scale = ifcopenshell.util.unit.calculate_unit_scale(model)
+    original_project = original_world_si.copy()
+    original_project[:3, 3] /= scale
+    parent_world = (ifcopenshell.util.placement.get_local_placement(parent_placement)
+                    if parent_placement is not None else np.eye(4))
+    relative = np.linalg.solve(parent_world, original_project)
+
+    origin = tuple(float(v) for v in relative[:3, 3])
+    x = np.array(relative[:3, 0], dtype=float)
+    z = np.array(relative[:3, 2], dtype=float)
+    if np.linalg.norm(x) < 1e-12 or np.linalg.norm(z) < 1e-12:
+        raise RuntimeError(f'Degenerate placement axes for {element.GlobalId}')
+    x /= np.linalg.norm(x)
+    z /= np.linalg.norm(z)
+    z /= np.linalg.norm(z)
+    x -= np.dot(x, z) * z
+    if np.linalg.norm(x) < 1e-12:
+        raise RuntimeError(f'Invalid placement orientation for {element.GlobalId}')
+    x /= np.linalg.norm(x)
+
+    axis = model.createIfcAxis2Placement3D(
+        model.createIfcCartesianPoint(origin),
+        model.createIfcDirection(tuple(float(v) for v in z)),
+        model.createIfcDirection(tuple(float(v) for v in x)))
+    placement.PlacementRelTo = parent_placement
+    placement.RelativePlacement = axis
+
+
+def repair_reparented_placements(model, snapshots, tolerance=1e-7, parents=None):
+    """Reparent placements and verify world transform and placement parent.
+
+    An actual placement-parent mismatch is repaired, not just detected.
+    Unhandled placements and numerically changed placements fail closed.
     """
     import numpy as np
     import ifcopenshell.api.geometry
+
     changed = 0
     parents = parents or {}
     for element, old in snapshots:
@@ -40,21 +92,18 @@ def repair_reparented_placements(model, snapshots, tolerance=1e-7, parents=None)
         ifcopenshell.api.geometry.edit_object_placement(
             model, product=element, matrix=old, is_si=True,
             should_transform_children=False)
+        target = parents.get(element.id())
+        if target is not None:
+            parent_placement = getattr(target, 'ObjectPlacement', None)
+            placement = getattr(element, 'ObjectPlacement', None)
+            if placement is None or placement.PlacementRelTo != parent_placement:
+                _explicitly_reparent(model, element, old, parent_placement)
+            placement = element.ObjectPlacement
+            if placement is None or placement.PlacementRelTo != parent_placement:
+                raise RuntimeError(f'Placement parent mismatch for {element.GlobalId}; '
+                                   'export safely aborted.')
         current = _world_placement_si(model, element.ObjectPlacement)
         if not np.allclose(old, current, rtol=0, atol=tolerance):
             raise RuntimeError(f'Placement moved after reassignment: {element.GlobalId}')
-        target = parents.get(element.id())
-        if target is not None:
-            # Spatial membership and ObjectPlacement.PlacementRelTo are distinct.
-            # Editing the world transform alone does not prove reparenting.
-            parent_placement = getattr(target, 'ObjectPlacement', None)
-            placement = getattr(element, 'ObjectPlacement', None)
-            # Storeys without a placement are legal: the element's new local
-            # placement must then be absolute (PlacementRelTo=None).
-            if placement is None or placement.PlacementRelTo != parent_placement:
-                raise RuntimeError(
-                    f'Placement parent mismatch for {element.GlobalId}: '
-                    'expected direct relative placement to ancestor storey; '
-                    'export safely aborted.')
         changed += 1
     return changed
