@@ -1,11 +1,11 @@
-# IFC Material Filter v1.5.5 — Phase 2 semantic preservation
+# IFC Material Filter v1.5.6 — Phase 3 maintenance and usability
 
-**Status:** GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
+**Status:** v1.5.6 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
 ## Everyday workflow
 
 1. Select an input IFC.
-2. Enter **Material names (one per line or separated by semicolons)**.
+2. Enter **Material names (one per line or separated by semicolons)**. The field starts empty.
 3. Accept or change the output filename and click **Filter IFC**.
 4. Follow the animated progress indicator and status message. It is indeterminate, not a fabricated percentage.
 
@@ -17,7 +17,7 @@ See [`V1_5_UI.md`](V1_5_UI.md) for the UI guide and limitations.
 
 ## Engines and outputs
 
-The default **Batch Cleanup** (`batch`) engine writes the requested filtered IFC filename. In the GUI, **Save audit CSV** and **Save detailed reports** are both OFF by default, so ordinary filtering saves only the IFC (unless a failure requires emergency diagnostics). Enable the respective Advanced Options checkboxes to save reports. Optional **IfcPatch** is a reference engine; **Both** creates `_batch.ifc` and `_ifcpatch.ifc` for comparison. Audit-only mode saves a CSV rather than an IFC.
+The default **Batch Cleanup** (`batch`) engine writes the requested filtered IFC filename. In the GUI, **Save audit CSV** and **Save detailed reports** are both OFF by default, so ordinary filtering saves only the IFC (unless a failure requires emergency diagnostics). Enable the respective Advanced Options checkboxes to save reports. Optional **IfcPatch** is a reference engine; **Both** creates `_batch.ifc` and `_ifcpatch.ifc` for comparison. Audit-only mode saves a CSV rather than an IFC and does not require an output filename. The success message explicitly states that no IFC was exported.
 
 ## Material semantics
 
@@ -58,8 +58,24 @@ The 40 MB and 360 MB reference-model benchmarks support using Batch Cleanup as t
 ### CLI alternative
 
 ```powershell
-python cli.py original.ifc filtered.ifc --material "Stahlbeton Schweiz" --material "Beton C30/37" --engine both --validation full
+python cli.py original.ifc filtered.ifc --material "Concrete;Steel"
+# Optional reports:
+python cli.py original.ifc filtered.ifc --material "Concrete" --save-audit --save-reports
+# Audit-only: output IFC path can be omitted:
+python cli.py original.ifc --material "Concrete" --dry-run
 ```
+
+**CLI defaults:** Batch Cleanup (`batch`) and Standard (`basic`) validation, with audit/report saving OFF. `--save-audit` and `--save-reports` enable additional files; `--no-audit`/`--no-reports` remain accepted as compatibility aliases. Newlines and semicolons are split within **every** `--material` argument. Routine use still writes only the output IFC.
+
+## Phase 3 — v1.5.6 maintenance (m1–m12)
+
+- Shared `version.__version__` sets GUI title and comparison-report version.
+- Optional timing now uses separate `*.selection.timing.csv` and `*.timing.csv` files, with distinct `*.metrics.csv` companions. Selection and engine timing are no longer overwritten.
+- Audit-only saves an audit CSV and shows a correct status; an output IFC filename is not required.
+- Geometry verification compares placement matrices numerically, with requested project-unit tolerance for **translations** and an independent dimensionless orientation tolerance (`1e-8`); the world-space tessellation hash method remains otherwise unchanged.
+- The unreachable-entity diagnostic counter now uses the model's length where available, with a conservative iterator fallback. Export/pruning semantics are unchanged. A real-IFC integration test guards entity-count behavior.
+- The material entry field starts empty; all prior hints and Advanced Options are preserved.
+- Performance findings m10/m12 were reviewed using the measured reference-model timings. Both relationship removal and reachability behavior are **unchanged**, pending targeted scaling evidence. See `PHASE_3_V156.md`.
 
 ## Phase 2 — v1.5.5 semantic preservation (M1, M2, M5, M6, M9)
 
@@ -69,7 +85,7 @@ python cli.py original.ifc filtered.ifc --material "Stahlbeton Schweiz" --materi
 - **M6 — Retention policy:** `IfcProject` and all non-space spatial containers are retained (even if empty). `IfcSpace` objects are removed, with contained retained products moved to an ancestor storey and their global transforms preserved. Non-`IfcElement` products such as grids, annotations and ports are not material-selected; they may survive only if reachable through retained graph context. Their classes/counts are reported in the engine's internal validation summary. We intentionally do not make Batch Cleanup structurally identical to the optional IfcPatch engine.
 - **M9 — Tests:** Synthetic IFC2X3, IFC4 and IFC4X3 integration tests cover type-inherited material selection, direct-material overrides, unused type declarations, material properties, shape aspects and end-to-end Batch export. They run on the GitHub Windows runner with IfcOpenShell installed. The real Windows executable smoke test remains enabled.
 
-**Validation boundary:** The 40 MB and 360 MB reference models are IFC2X3 and are not sufficient to validate new IFC4/IFC4X3 type-declaration behavior. v1.5.5 is a *test candidate* until the Windows integration suite and reference-model regression checks pass. Optional Full schema validation, geometry comparison and material comparison remain recommended for new IFC sources.
+**Validation boundary:** The 40 MB and 360 MB reference models are IFC2X3 and are not sufficient to validate new IFC4/IFC4X3 type-declaration behavior. The v1.5.5 IFC2X3 reference models passed independent geometry and material comparisons, and the 360 MB Full validation reported four source and four output schema errors with zero orphan placements. IFC4/IFC4X3 behavior must still be verified through the corresponding synthetic integration tests. Optional Full schema validation, geometry comparison and material comparison remain recommended for new IFC sources.
 
 **Build:** `.github/workflows/build-windows.yml` remains **manual `workflow_dispatch` only**. No build starts on push.
 
@@ -118,7 +134,7 @@ output against the reference, including visual geometry/placement verification.
 
 ## Historical development notes (v1.4.x)
 
-The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.5 default.
+The following sections document earlier experimental steps and may contain historical wording such as “experimental,” “pending benchmarks,” or references to an older fallback. They describe the state **at that version**, not the current v1.5.6 default.
 
 ### v1.4.2 diagnostic update
 

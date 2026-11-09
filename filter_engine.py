@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 from performance import PerformanceLog
 from validation_v14 import full_validate
+from version import __version__
 
 
 def parse_materials(value: str | list[str]) -> list[str]:
@@ -21,7 +22,9 @@ def parse_materials(value: str | list[str]) -> list[str]:
     if isinstance(value, str):
         chunks = value.replace(';', '\n').splitlines()
     else:
-        chunks = value
+        # CLI argparse action="append" produces a list. Split each entry
+        # just like the multiline GUI input, preserving OR semantics.
+        chunks = [part for item in value for part in item.replace(';', '\n').splitlines()]
     result, seen = [], set()
     for item in chunks:
         name = item.strip()
@@ -101,8 +104,8 @@ def assess_selection(selected, rows, wanted_names, available_names, notify=print
 def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                parent_mode: str = 'aggregates', audit_path: str | None = None,
                dry_run: bool = False, notify: Callable[[str], None] = print,
-               engine: str = 'both', validation: str = 'full',
-               save_audit: bool = True, save_reports: bool = True):
+               engine: str = 'batch', validation: str = 'basic',
+               save_audit: bool = False, save_reports: bool = False):
     import ifcopenshell
     from extract_export import export_and_validate
     from batch_export import export_batch
@@ -312,13 +315,17 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                     writer.writeheader()
                     writer.writerows(rows)
             notify(f'Audit CSV: {audit}')
-        timing_path = dst.with_suffix('.timing.csv')
+        # Keep the selection/baseline-validation timings separate from the
+        # engine timings in single-engine mode (m3). Neither CSV overwrites
+        # another; reporting remains entirely opt-in.
+        timing_path = dst.with_suffix('.selection.timing.csv')
         if dry_run:
             perf.finish(timing_path if save_reports else None)
-            notify('Dry run finished; no IFC was written.')
+            notify('Audit completed; no IFC was exported.')
             return {'selected': len(selected), 'total': source_element_count,
                     'counts': dict(counts), 'unmatched_materials': unmatched_materials,
-                'audit': str(audit), 'timing': str(timing_path) if save_reports else None}
+                'audit': str(audit), 'timing': str(timing_path) if save_reports else None,
+                'dry_run': True}
 
         # Common selection shared between both engines. Each engine has an isolated
         # output file and timing log. Batch reads a separate IFC instance.
@@ -377,13 +384,14 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                     target_path.with_suffix('.timing.csv') if save_reports else None)
         # Write even on partial failure to keep successful reference output usable.
         comparison = {
-            'application_version': '1.5.5', 'engine_mode': engine,
+            'application_version': __version__, 'engine_mode': engine,
             'validation_mode': validation, 'input': str(src),
             'materials': wanted_names, 'parent_mode': parent_mode,
             'selected_elements': len(expected_ids), 'support_shells': len(support_shells),
             'support_openings': len(support_openings), 'engines': results,
             'errors': errors,
             'source_validation': source_validation,
+            'selection_timing': str(timing_path) if save_reports else None,
             }
         if engine == 'both' and all('path' in results.get(k, {}) for k in ('ifcpatch', 'batch')):
             ratio = results['batch']['bytes'] / max(results['ifcpatch']['bytes'], 1)
@@ -422,7 +430,9 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         return {'selected': len(selected), 'total': source_element_count, 'counts': dict(counts),
                 'unmatched_materials': unmatched_materials,
                 'audit': str(audit) if (save_audit or dry_run) else None,
-                'comparison': str(comparison_file) if save_reports else None, 'engines': results}
+                'comparison': str(comparison_file) if save_reports else None,
+                'selection_timing': str(timing_path) if save_reports else None,
+                'engines': results}
 
     finally:
         # Failure before the normal finish() must not leave the RSS sampler running.

@@ -38,15 +38,38 @@ def mesh_signature(vertices, faces, tolerance=0.0001):
             'triangle_hash': digest.hexdigest()}
 
 
-def _placement_signature(product, tolerance=1e-6):
+def _placement_signature(product):
     import ifcopenshell.util.placement
     placement = getattr(product, 'ObjectPlacement', None)
     if placement is None:
         return None
-    # Compare source and output placements in their respective IFC project units.
-    # The material filter preserves units; no SI conversion is needed here.
+    # Preserve the actual matrix: per-element quantization introduces false
+    # differences at rounding boundaries. Compare corresponding components
+    # numerically using the user-selected project-unit tolerance instead.
     matrix = ifcopenshell.util.placement.get_local_placement(placement)
-    return [_quantize(row, tolerance) for row in matrix]
+    return [[float(value) for value in row] for row in matrix]
+
+
+def _placements_equivalent(a, b, tolerance):
+    """Compare world placement without rounding-boundary false mismatches.
+
+    The translation column is measured in project length units, whereas
+    orientation/matrix values are dimensionless. Relative tolerance is zero:
+    large global coordinates must not conceal a small but real displacement.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    if len(a) != len(b):
+        return False
+    for row_index, (ra, rb) in enumerate(zip(a, b)):
+        if len(ra) != len(rb):
+            return False
+        for col_index, (va, vb) in enumerate(zip(ra, rb)):
+            component_tolerance = tolerance if col_index == 3 and row_index < 3 else 1e-8
+            if not math.isclose(float(va), float(vb), rel_tol=0,
+                                abs_tol=component_tolerance):
+                return False
+    return True
 
 
 def _scan_model(path, guids, tolerance, notify):
@@ -122,7 +145,7 @@ def compare_geometry(source, filtered, report_path=None, tolerance=0.0001, notif
             failures.append({'global_id':guid, 'reason':'Missing in source'})
         elif a.get('ifc_class') != b.get('ifc_class'):
             failures.append({'global_id':guid, 'reason':'IFC class changed'})
-        elif a.get('placement') != b.get('placement'):
+        elif not _placements_equivalent(a.get('placement'), b.get('placement'), tolerance):
             failures.append({'global_id':guid, 'reason':'Global placement matrix changed', 'source_placement':a.get('placement'), 'output_placement':b.get('placement')})
         elif a['status'] == 'OK' and b['status'] == 'OK':
             if a['triangle_hash'] != b['triangle_hash']:
@@ -141,7 +164,7 @@ def compare_geometry(source, filtered, report_path=None, tolerance=0.0001, notif
               'both_without_representation':no_repr,
               'geometry_unverified':len(unverified), 'mismatches':len(failures),
               'passed':not failures and not unverified,
-              'caveat':'World-space tessellation comparison in the IFC project length units, not proof of exact BREP equivalence. Compare only same project-unit models.',
+              'caveat':'World-space tessellation comparison in IFC project length units, not proof of exact BREP equivalence. Translation tolerance uses the requested project units; orientation tolerance is 1e-8 dimensionless. Compare only same project-unit models.',
               'failures':failures, 'unverified':unverified}
     report_path = Path(report_path) if report_path else filtered.with_suffix('.geometry_comparison.json')
     report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')

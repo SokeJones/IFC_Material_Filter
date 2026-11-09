@@ -1,4 +1,4 @@
-"""IFC Material Filter v1.5.5: Phase 2 semantic integrity.
+"""IFC Material Filter GUI: simple routine filtering and opt-in diagnostics.
 
 Keep engine logic in filter_engine unchanged. The GUI only dispatches to it.
 """
@@ -12,12 +12,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from filter_engine import export_ifc, parse_materials
+from version import __version__
 
 
 class FilterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('IFC Material Filter v1.5.5')
+        self.title(f'IFC Material Filter v{__version__}')
         self.geometry('760x620')
         self.minsize(620, 570)
         self.q = queue.Queue()
@@ -70,7 +71,6 @@ class FilterApp(tk.Tk):
         ttk.Label(outer, text='Material names').pack(anchor='w')
         self.materials = tk.Text(outer, height=4, wrap='word', undo=True, font=('Segoe UI', 10))
         self.materials.pack(fill='x', pady=(4, 2))
-        self.materials.insert('1.0', 'Stahlbeton Schweiz\n')
         ttk.Label(outer, text='One per line or separated by semicolons.', foreground='#666666').pack(anchor='w', pady=(0, 14))
 
         ttk.Label(outer, text='Output IFC file').pack(anchor='w')
@@ -234,9 +234,15 @@ class FilterApp(tk.Tk):
             return
         infile, outfile = self.filevar.get().strip(), self.outputvar.get().strip()
         materials = parse_materials(self.materials.get('1.0', 'end'))
-        if not infile or not outfile or not materials:
-            messagebox.showerror('Missing input', 'Select input IFC and output file, and enter at least one material.')
+        if not infile or not materials or (not outfile and not self.dryvar.get()):
+            messagebox.showerror('Missing input', 'Select input IFC, enter at least one material, '
+                                 'and choose an output file for IFC export.')
             return
+        if not outfile and self.dryvar.get():
+            # Audit-only writes an audit CSV alongside the source. No output
+            # IFC pathname needs to be entered or actually created.
+            source_path = Path(infile)
+            outfile = str(source_path.with_name(source_path.stem + '_filtered.ifc'))
         if not Path(infile).is_file():
             messagebox.showerror('Input missing', 'The selected source IFC does not exist.')
             return
@@ -247,7 +253,7 @@ class FilterApp(tk.Tk):
         opts = (infile, outfile, materials, self.parentvar.get(), self.dryvar.get(),
                 self.enginevar.get(), self.validationvar.get(),
                 self.saveauditvar.get(), self.savereportsvar.get())
-        self._begin('Filtering IFC...')
+        self._begin('Auditing IFC...' if self.dryvar.get() else 'Filtering IFC...')
         self._log('Selected materials: ' + '; '.join(materials))
         self._log('Engine: ' + self.enginevar.get() + '; validation: ' + self.validationvar.get())
         self._log(f'Save audit: {self.saveauditvar.get()}; save reports: {self.savereportsvar.get()}')
@@ -309,7 +315,14 @@ class FilterApp(tk.Tk):
                     self._log(str(data))
                     self.stagevar.set(str(data)[:115])
                 elif kind == 'done':
-                    self._finish('Filtering completed successfully.')
+                    audit_only = data.get('dry_run', False)
+                    self._finish('Audit completed — no IFC exported.' if audit_only else
+                                 'Filtering completed successfully.')
+                    if audit_only:
+                        messagebox.showinfo('Audit completed',
+                                            'Audit CSV saved. No IFC file was exported.\n' +
+                                            str(data.get('audit', '')))
+                        continue
                     unmatched = data.get('unmatched_materials', [])
                     if unmatched:
                         messagebox.showwarning('Filtering completed with a material warning',

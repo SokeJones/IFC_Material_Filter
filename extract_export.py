@@ -51,8 +51,7 @@ def strip_unselected_assembly_geometry(output, selected_ids: set[str], notify=pr
     return cleared
 
 
-def validate_extraction(output, original_schema: str, expected_ids: set[str],
-                        opening_ids: set[str] | None = None):
+def validate_extraction(output, original_schema: str, expected_ids: set[str]):
     """Check preservation and selection isolation; does not prove geometric identity."""
     if output.schema.upper() != original_schema.upper():
         raise RuntimeError(f'IFC schema changed: {original_schema} -> {output.schema}')
@@ -110,7 +109,7 @@ def export_and_validate(model, input_path: str, output_path: Path,
         if check is None:
             raise RuntimeError('Could not reopen exported IFC')
         with stage('11 Validate IDs, schema and geometry references'):
-            report = validate_extraction(check, original_schema, extract_ids, opening_ids)
+            report = validate_extraction(check, original_schema, extract_ids)
             # Legacy-compatible fallback for direct callers without precomputed ids.
             if source_represented is None:
                 source_represented = {

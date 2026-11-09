@@ -37,3 +37,11 @@ The UI recommendation is intentional: Batch Cleanup remains the default. Standar
 ## v1.5.4 Phase 1B
 
 No change to the UI controls, output-file defaults or manually triggered GitHub workflow. Structural integrity checks fail safely if reparented placements or support-shell representations are invalid.
+
+
+## v1.5.6 UI notes
+
+- The material field starts empty; the hint “One per line or separated by semicolons.” remains.
+- Audit-only mode shows “Audit completed — no IFC exported” and does not require an output IFC filename.
+- Default output is still **only** the filtered IFC. Audits and other diagnostic reports remain opt-in.
+- Selecting a different input IFC resets the progress/status; the process log remains available.

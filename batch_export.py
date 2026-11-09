@@ -357,6 +357,22 @@ def reachable_ids(roots, model=None, diagnostics=None, notify=None):
                     diagnostics.inverse_traversal(obj, count, by_class)
     return seen
 
+
+def count_unreachable_entities(model, reachable: set[int]) -> int:
+    """Count unused STEP entities without iterating when file length is available.
+
+    Fallback supports model interfaces without __len__. Diagnostic only:
+    pruning still operates on the original reachable STEP ID set.
+    """
+    try:
+        total = len(model)
+    except (TypeError, AttributeError):
+        return sum(1 for entity in model if entity.id() not in reachable)
+    if total < len(reachable):
+        raise RuntimeError('Reachability contains more serialized entities than source file')
+    return total - len(reachable)
+
+
 def batch_filter(model, retained_guids: set[str], support_guids: set[str],
                  notify=print, timings=None, diagnostics=None):
     from contextlib import nullcontext
@@ -414,11 +430,10 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
             timings.count('batch_live_roots', len(roots))
             timings.count('batch_reachable_step_entities', len(reachable))
     with timed('B05 Count unreachable resources'):
-        # Do NOT create millions of entity wrappers or call remove() for each.
-        # We instead serialize the edited model and stream-prune the remaining
-        # unreachable STEP records. This also avoids model.unbatch() rewriting
-        # millions of records without any progress events.
-        unreach_count = sum(1 for entity in model if entity.id() not in reachable)
+        # IfcOpenShell file length represents its STEP entity count. Avoid
+        # constructing millions of entity wrappers for this metric.
+        # The STEP pruning pass verifies actual serialized IDs separately.
+        unreach_count = count_unreachable_entities(model, reachable)
         if timings: timings.count('batch_orphan_step_entities', unreach_count)
         notify(f'Unreachable STEP records: {unreach_count:,}')
     return {'removed_products': removed_count, 'orphan_records': unreach_count,
@@ -501,7 +516,7 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
         with timed('B08 Reopen batch output'):
             reopened = ifcopenshell.open(str(temp))
         with timed('B09 Validate selected IDs, schema, geometry references'):
-            report = validate_extraction(reopened, model.schema, expected_ids | opening_ids, opening_ids)
+            report = validate_extraction(reopened, model.schema, expected_ids | opening_ids)
             # Context products may be retained through spatial relationships;
             # disclose them without imposing IfcPatch structural equivalence.
             report['retained_non_element_products'] = retained_context_product_counts(reopened)
