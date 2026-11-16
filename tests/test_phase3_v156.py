@@ -66,7 +66,7 @@ class Phase3Tests(unittest.TestCase):
             cli.main(['source.ifc','--material','Concrete'])
 
     def test_m2_version_centralized(self):
-        self.assertEqual(__version__, '1.6.1')
+        self.assertEqual(__version__, '1.6.2')
         engine = (ROOT / 'filter_engine.py').read_text(encoding='utf-8')
         app = (ROOT / 'app.py').read_text(encoding='utf-8')
         self.assertIn("'application_version': __version__", engine)

@@ -1,51 +1,44 @@
-"""Phase 1A recovery tests using a synthetic model; no IfcOpenShell required."""
+"""Destination-side leftovers from old versions must never be deleted implicitly."""
 import sys
 import tempfile
 import unittest
+import types
 from pathlib import Path
 from unittest.mock import patch
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import batch_export
-
+from local_workspace import LocalWorkspace
 
 class FakeModel:
     def write(self, path):
         Path(path).write_text('HEADER;\nDATA;\nENDSEC;\n', encoding='ascii')
 
-
 class TemporarySafetyTests(unittest.TestCase):
-    def test_existing_unpruned_temp_fails_before_filtering(self):
+    def test_old_destination_partial_is_not_removed(self):
         with tempfile.TemporaryDirectory() as folder:
             out = Path(folder) / 'result.ifc'
-            raw = Path(folder) / 'result.unpruned.incomplete.ifc'
-            raw.write_text('belonging to another run')
-            with patch.object(batch_export, 'batch_filter') as filter_mock, \
-                 patch.dict(sys.modules, {'ifcopenshell': __import__('types').ModuleType('ifcopenshell')}):
-                with self.assertRaises(FileExistsError):
-                    batch_export.export_batch(FakeModel(), out, {'x'}, set(), set())
-                filter_mock.assert_not_called()
-            self.assertEqual(raw.read_text(), 'belonging to another run')
-
-    def test_own_temp_removed_on_failure_during_pruning(self):
-        with tempfile.TemporaryDirectory() as folder:
-            out = Path(folder) / 'result.ifc'
-            raw = Path(folder) / 'result.unpruned.incomplete.ifc'
-            temp = Path(folder) / 'result.incomplete.ifc'
-            def failing_prune(*args, **kwargs):
-                temp.write_text('partial')
-                raise RuntimeError('synthetic failure')
-            with patch.object(batch_export, 'batch_filter', return_value={
-                'reachable_entity_ids': {1}, 'remaining_elements': 1,
-            }), patch('step_prune.prune_serialized_ifc', side_effect=failing_prune), \
-                patch.dict(sys.modules, {'ifcopenshell': __import__('types').ModuleType('ifcopenshell')}):
-                with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+            legacy = out.with_name(out.stem + '.unpruned.incomplete.ifc')
+            legacy.write_text('belonging to another run')
+            # B00 is reached; prior temp file is not a preflight blocker.
+            with patch.object(batch_export, 'batch_filter', side_effect=RuntimeError('stop')), \
+                 patch.dict(sys.modules, {'ifcopenshell': types.ModuleType('ifcopenshell')}):
+                with self.assertRaisesRegex(RuntimeError, 'stop'):
                     batch_export.export_batch(FakeModel(), out, {'x'}, set(), set(),
-                                              save_reports=False, notify=lambda _:None)
-            self.assertFalse(raw.exists())
-            self.assertFalse(temp.exists())
+                                              save_reports=False, notify=lambda _: None)
+            self.assertEqual(legacy.read_text(), 'belonging to another run')
             self.assertFalse(out.exists())
 
+    def test_workspace_cleanup_after_exception(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / 'result.ifc'
+            root = Path(folder) / 'workspace'
+            with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+                with LocalWorkspace(out, root=root, notify=lambda _: None) as workspace:
+                    workspace.raw.write_text('source')
+                    workspace.pruned.write_text('partial')
+                    raise RuntimeError('synthetic failure')
+            self.assertEqual(list(root.glob('run-*')), [])
+            self.assertFalse(out.exists())
 
 if __name__ == '__main__':
     unittest.main()
