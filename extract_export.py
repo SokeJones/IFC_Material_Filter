@@ -84,10 +84,21 @@ def export_and_validate(model, input_path: str, output_path: Path,
     import ifcopenshell
     import ifcpatch
     from validation_v14 import full_validate
+    from local_workspace import LocalWorkspace, recover_abandoned
     dest = Path(output_path)
-    temp = dest.with_name(dest.stem + '.incomplete.ifc')
-    if temp.exists():
-        raise FileExistsError(f'Temporary output exists: {temp}')
+    recover_abandoned(notify=notify)
+    with LocalWorkspace(dest, notify=notify) as workspace:
+        return _export_and_validate_in_workspace(model, input_path, dest, expected_ids,
+                                                   opening_ids, workspace, notify, timings,
+                                                   source_represented, validation)
+
+
+def _export_and_validate_in_workspace(model, input_path, dest, expected_ids, opening_ids,
+                                      workspace, notify, timings, source_represented, validation):
+    import ifcopenshell
+    import ifcpatch
+    from validation_v14 import full_validate
+    temp = workspace.pruned
     original_schema = model.schema
     # Include openings to preserve voids even if they have no matching material.
     # This avoids relying on recipe-specific implicit opening behaviour.
@@ -123,7 +134,7 @@ def export_and_validate(model, input_path: str, output_path: Path,
             with stage('12 IFC schema validation'):
                 report.update(full_validate(check, notify))
         with stage('13 Finalize output'):
-            temp.replace(dest)
+            workspace.publish(temp)
         return report
     except Exception:
         try:

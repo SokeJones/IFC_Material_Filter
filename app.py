@@ -22,6 +22,9 @@ class FilterApp(tk.Tk):
         self.geometry('760x620')
         self.minsize(620, 570)
         self.q = queue.Queue()
+        from local_workspace import recover_abandoned
+        threading.Thread(target=lambda: recover_abandoned(
+            notify=lambda message: self.q.put(('log', message))), daemon=True).start()
         self.worker = None
         self.filevar = tk.StringVar()
         self.outputvar = tk.StringVar()

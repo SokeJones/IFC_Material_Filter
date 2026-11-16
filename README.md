@@ -1,6 +1,8 @@
-# IFC Material Filter v1.6.1 — Case-sensitive filtering and material inventory
+# IFC Material Filter v1.6.2 — Local SSD workspace + case-sensitive material filtering
 
-**Status:** v1.6.1 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
+**See `RELEASE_V1_6_2.md` for local workspace, network-output reliability, recovery limitations and acceptance tests.**
+
+**Status:** v1.6.2 GitHub Actions source/build kit for a portable Windows executable (no compiled EXE included). **Batch Cleanup is the supported default engine for this project**, based on the 40 MB and 360 MB reference-model tests. Those tests passed structural, world-space tessellated-geometry and effective-material comparisons; schema-error counts did not increase. These are project-specific regression results, not a guarantee for all IFC files or schemas.
 
 ## Everyday workflow
 

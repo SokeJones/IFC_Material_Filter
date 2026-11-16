@@ -447,20 +447,31 @@ def batch_filter(model, retained_guids: set[str], support_guids: set[str],
 
 
 def export_batch(model, output_path: Path, expected_ids, opening_ids, source_represented,
-                 notify=print, timings=None, validation='full', reachability_diagnostics=True, save_reports=True):
+                 notify=print, timings=None, validation='full', reachability_diagnostics=True, save_reports=True, source_bytes=0):
     import ifcopenshell
     from extract_export import validate_extraction
     from validation_v14 import full_validate
     from contextlib import nullcontext
+    from local_workspace import LocalWorkspace, recover_abandoned
     out = Path(output_path)
-    temp = out.with_name(out.stem + '.incomplete.ifc')
-    raw = out.with_name(out.stem + '.unpruned.incomplete.ifc')
-    # Both names must be checked before the expensive graph cleanup begins.
-    stale = [path for path in (temp, raw) if path.exists()]
-    if stale:
-        raise FileExistsError('Temporary IFC file already exists: '
-                              + str(stale[0])
-                              + '. Move or remove the stale file before retrying.')
+    recover_abandoned(notify=notify)
+    # All serialization and validation paths are local. The destination is
+    # accessed only after successful validation, during staged publication.
+    workspace = LocalWorkspace(out, notify=notify, source_bytes=source_bytes)
+    with workspace:
+        return _export_batch_in_workspace(
+            model, out, expected_ids, opening_ids, source_represented,
+            workspace, notify, timings, validation, reachability_diagnostics, save_reports)
+
+
+def _export_batch_in_workspace(model, out, expected_ids, opening_ids, source_represented,
+                               workspace, notify, timings, validation,
+                               reachability_diagnostics, save_reports):
+    import ifcopenshell
+    from extract_export import validate_extraction
+    from validation_v14 import full_validate
+    from contextlib import nullcontext
+    temp, raw = workspace.pruned, workspace.raw
     def timed(label):
         return timings.stage(label) if timings else nullcontext()
     reachability_diagnostics = bool(reachability_diagnostics and save_reports)
@@ -540,7 +551,7 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
                 report['placement_diagnostics'] = str(details_path)
             notify(f'Orphan placement diagnostics: {len(details["orphan_placements"]):,} findings')
         with timed('B11 Finalize batch output'):
-            temp.replace(out)
+            workspace.publish(temp)
         report.update(stats)
         return report
     except Exception:
@@ -551,6 +562,6 @@ def export_batch(model, output_path: Path, expected_ids, opening_ids, source_rep
                 partial.unlink(missing_ok=True)
             except OSError as cleanup_error:
                 notify(f'WARNING: Could not remove {partial}: {cleanup_error}')
-        notify('Batch export failed; temporary IFC files cleaned where possible. '
+        notify('Batch export failed; local workspace cleanup will run. '
                'The final output was not replaced.')
         raise

@@ -152,15 +152,10 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
         existing = [path for path in outputs.values() if path.exists()]
         if existing:
             raise FileExistsError(f'Output already exists: {existing[0]}')
-        # Check stale temporary files before loading an expensive model.
-        temporary = [temporary_path for engine_name, path in outputs.items()
-                     for temporary_path in ((path.with_name(path.stem + '.incomplete.ifc'),)
-                         + ((path.with_name(path.stem + '.unpruned.incomplete.ifc'),)
-                            if engine_name == 'batch' else ()))
-                     if temporary_path.exists()]
-        if temporary:
-            raise FileExistsError('Stale temporary IFC exists: ' + str(temporary[0])
-                                  + '. Move or delete it before filtering.')
+        from local_workspace import recover_abandoned
+        recover_abandoned(notify=notify)
+        # Older destination-side .incomplete files are deliberately never
+        # deleted automatically: ownership cannot be established safely.
     perf = PerformanceLog(notify, label='selection')
     try:
         notify(f'Loading model: {src.name}')
@@ -387,7 +382,8 @@ def export_ifc(input_path: str, output_path: str, materials: str | list[str],
                     report = export_batch(batch_model, target_path, expected_ids,
                                           support_openings | support_shells,
                                           source_represented, notify, timings=eng_perf,
-                                          validation=validation, save_reports=save_reports)
+                                          validation=validation, save_reports=save_reports,
+                                          source_bytes=src.stat().st_size)
                     del batch_model
                 eng_perf.count('output_bytes', target_path.stat().st_size)
                 eng_perf.count('output_elements', report['physical_count'])
